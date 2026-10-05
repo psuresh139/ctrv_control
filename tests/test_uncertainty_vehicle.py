@@ -152,3 +152,18 @@ def test_uncertainty_policy_rejects_nonfinite_and_invalid_configuration():
  import pytest
  for kwargs in [{'position_scale_m':np.nan},{'confidence':1.},{'friction_reserve':1.1},{'tightening':'yes'}]:
   with pytest.raises(ValueError):UncertaintyPolicy(**kwargs)
+
+
+def test_vehicle_timing_includes_reference_generation(monkeypatch):
+ import ctrv.vehicle_simulation as simulation
+ clock=[0.]
+ original=simulation.rolling_reference
+ def counted_reference(*args,**kwargs):
+  reference=original(*args,**kwargs);clock[0]+=.5
+  return reference
+ monkeypatch.setattr(simulation,'perf_counter',lambda:clock[0])
+ monkeypatch.setattr(simulation,'rolling_reference',counted_reference)
+ result=simulation.run_vehicle_simulation(policy='mpc',estimator='ekf',duration=.2)
+ assert all(d['computation_s']==.5 for d in result['controller_diagnostics'])
+ assert result['metrics']['controller_time_p50_ms']==500.
+ assert result['metrics']['deadline_miss_pct']==100.

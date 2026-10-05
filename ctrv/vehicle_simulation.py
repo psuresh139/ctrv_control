@@ -6,6 +6,7 @@ are computed from estimates only; true states are used solely for measurements
 and evaluation. The surface coefficient is declared available to all policies.
 """
 from dataclasses import asdict
+from time import perf_counter
 import numpy as np
 from scipy.stats import chi2, norm
 from ctrv.constants import DT, P_INIT
@@ -53,6 +54,7 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
     selected=POLICIES[policy];commands=[];applied_commands=[];diagnostics=[];physics=[];caps=[];progresses=[];innovations=[]
     progress=0.;index=0;previous=path['states'][0,[6,7]];completed_at=None
     for k in range(steps):
+        tick=perf_counter()
         surface=patch_mu if patch_mu is not None and 15<=times[k]<25 else mu
         # Local nearest-path search avoids distant branch jumps. Projection
         # is monotonic, while lateral error remains in the tracking objective.
@@ -65,6 +67,7 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
         X,U=rolling_reference(path,progress,cap,controller.config.horizon,limits,vehicle_config,surface)
         command,diagnostic=controller.command(estimated[k],covariance[k],X,U,previous,surface,selected,
                                               speed_cap=cap if selected is not None and selected.speed_control else None)
+        diagnostic['computation_s']=perf_counter()-tick
         previous=command;commands.append(command);diagnostics.append(diagnostic);caps.append(cap);progresses.append(progress)
         perturbation=np.sqrt(np.diag(noise.command_covariance(DT))*scenario.plant_noise_scale)*command_draws[k]
         applied=np.clip(command+perturbation,[-limits.max_braking,-limits.max_steering],[limits.max_accel,limits.max_steering])
