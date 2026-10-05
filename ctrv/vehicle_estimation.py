@@ -43,7 +43,11 @@ def validate_vehicle_covariance(P):
 def stabilize_covariance(P):
     P = (P+P.T)/2
     values, vectors = np.linalg.eigh(P)
-    return (vectors*np.maximum(values, 1e-12))@vectors.T
+    # Reconstruction error scales with the largest eigenvalue. A fixed floor
+    # cannot preserve PSD when uncertainty spans many orders of magnitude.
+    floor = max(1e-12, 8*np.finfo(float).eps*max(1., float(np.max(np.abs(values)))))
+    result = (vectors*np.maximum(values, floor))@vectors.T
+    return (result+result.T)/2
 
 
 def vehicle_prediction(state, command, dt, mu, config=VehicleConfig(), limits=DEFAULT_LIMITS):
