@@ -1,7 +1,8 @@
 """Synthetic dynamic bicycle with explicit actuator and combined tire limits.
 
 State [x,y,v_long,heading,yaw_rate,v_lateral,accel_actuator,steering_actuator].
-The first five states retain the CTRV estimator interface. No measured vehicle
+The first five states preserve historical ordering; vehicle filters use all eight.
+No measured vehicle
 parameters, suspension, wheel dynamics, load transfer or hardware validation.
 """
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ class VehicleConfig:
     acceleration_jerk_mps3: float = 10.
     drag_coefficient: float = .35
     integration_step_s: float = .01
+    low_speed_regularization_mps: float = .5
 
     def __post_init__(self):
         if any(not np.isfinite(v) or v<=0 for v in self.__dict__.values()):
@@ -32,22 +34,28 @@ class VehicleConfig:
 def tire_forces(state,mu,config=VehicleConfig()):
     if not np.isfinite(mu) or mu<=0:raise ValueError('Positive friction required')
     state=np.asarray(state,float)
-    v=np.maximum(state[...,2],.5);r=state[...,4];vy=state[...,5];a=state[...,6];delta=state[...,7]
+    actual_v=np.maximum(state[...,2],0.)
+    v=np.sqrt(actual_v**2+config.low_speed_regularization_mps**2);r=state[...,4];vy=state[...,5];a=state[...,6];delta=state[...,7]
     L=config.front_distance_m+config.rear_distance_m
     weights=np.array([config.rear_distance_m,config.front_distance_m])/L
     normal=config.mass_kg*9.81*weights
-    demanded_long=config.mass_kg*a[...,None]*weights
+    effective_a=np.where((actual_v<=0.) & (a<0.),0.,a)
+    demanded_long=config.mass_kg*effective_a[...,None]*weights
     longitudinal=np.clip(demanded_long,-mu*normal,mu*normal)
     available=np.sqrt(np.maximum(0.,(mu*normal)**2-longitudinal**2))
     slip=np.stack([delta-np.arctan2(vy+config.front_distance_m*r,v),
                    -np.arctan2(vy-config.rear_distance_m*r,v)],axis=-1)
     stiffness=np.array([config.cornering_front_nprad,config.cornering_rear_nprad])
-    lateral=available*np.tanh(stiffness*slip/np.maximum(available,1e-9))
+    contact_lateral=np.stack([vy+config.front_distance_m*r,vy-config.rear_distance_m*r],axis=-1)
+    contact_speed_sq=actual_v[...,None]**2+contact_lateral**2
+    motion_factor=np.sqrt(contact_speed_sq/(contact_speed_sq+config.low_speed_regularization_mps**2))
+    lateral=motion_factor*available*np.tanh(stiffness*slip/np.maximum(available,1e-9))
     utilization=np.hypot(longitudinal,lateral)/(mu*normal)
     return longitudinal,lateral,utilization
 
 
 def derivative(state,command,mu,config=VehicleConfig(),limits=DEFAULT_LIMITS):
+    state=np.asarray(state,float);command=np.asarray(command,float)
     longitudinal,lateral,util=tire_forces(state,mu,config)
     v=np.maximum(state[...,2],0.);psi=state[...,3];r=state[...,4];vy=state[...,5];delta=state[...,7]
     fx=longitudinal[...,0]*np.cos(delta)-lateral[...,0]*np.sin(delta)+longitudinal[...,1]
@@ -57,11 +65,8 @@ def derivative(state,command,mu,config=VehicleConfig(),limits=DEFAULT_LIMITS):
     acceleration=np.where((state[...,2]<=0.) & (acceleration<0.),0.,acceleration)
     lateral_rate=fy/config.mass_kg-r*v
     yaw_rate=moment/config.inertia_kgm2
-    # Continuous low-speed blend avoids singular slip-angle dynamics near rest.
-    blend=np.clip((v-.5)/1.5,0.,1.)
-    kin_r=np.maximum(v,0.)*np.tan(delta)/(config.front_distance_m+config.rear_distance_m)
-    yaw_rate=blend*yaw_rate+(1-blend)*(kin_r-r)/.1
-    lateral_rate=blend*lateral_rate-(1-blend)*vy/.1
+    # Low-speed regularization belongs inside the tire forces. Blending
+    # arbitrary kinematic accelerations here would violate the force budget.
     target_a=np.clip(command[...,0],-limits.max_braking,limits.max_accel)
     target_delta=np.clip(command[...,1],-limits.max_steering,limits.max_steering)
     da=np.clip((target_a-state[...,6])/config.acceleration_tau_s,
@@ -89,12 +94,3 @@ def step_vehicle(state,command,dt,mu=1.,config=VehicleConfig(),limits=DEFAULT_LI
     return state,{'friction_mu':mu,'tire_utilization_max':scalar(peak),'actual_acceleration':scalar(rates[...,2]),'actual_yaw_acceleration':scalar(rates[...,4]),
                   'actual_lateral_acceleration':scalar(rates[...,5]+state[...,4]*state[...,2]),
                   'actuator_acceleration':scalar(state[...,6]),'actuator_steering':scalar(state[...,7])}
-
-
-def ctrv_command_to_actuators(command,state,dt,limits=DEFAULT_LIMITS):
-    """Documented compatibility adapter, shared by both legacy controllers."""
-    v=max(.5,state[2]+command[...,0]*dt)
-    desired_rate=state[4]+command[...,1]*dt
-    delta=np.arctan(limits.wheelbase*desired_rate/v)
-    return np.array([np.clip(command[...,0],-limits.max_braking,limits.max_accel),
-                     np.clip(delta,-limits.max_steering,limits.max_steering)])

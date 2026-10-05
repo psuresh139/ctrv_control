@@ -157,7 +157,7 @@ def main(argv=None):
         report.append(f"| {group['scenario']} | {group['estimator']} | {group['controller']} | {number('cross_track_rmse_m_mean')} | {100*group['completed_rate']:.0f}% | {number('physical_limit_violation_pct_mean')} | {number('solver_fallback_pct_mean')} |")
     report.extend(['','Paired seed-bootstrap 95% intervals are in paired_comparisons.json. Completion-time comparisons include only pairs where both completed; valid-pair counts are explicit.',
                    'Per-component physical violations, slack, covariance consistency and timing remain visible. Confidence margins are uncalibrated local Gaussian surrogates; softened constraints do not establish chance feasibility.',
-                   'Friction is declared available equally to all policies. A low-friction patch occurs at 15–25 seconds. Fixed normal loads, synthetic tire parameters and low-speed blending limit physical fidelity.',
+                   'Friction is declared available equally to all policies. A low-friction patch occurs at 15–25 seconds. Fixed normal loads, synthetic tire parameters and low-speed slip regularization limit physical fidelity.',
                    'The shared time budget is twice the historical reference duration; completion time exposes the cost of slowing. Timing is descriptive for this machine.'])
     (args.output/'report.md').write_text('\n'.join(report)+'\n')
     failures=sum(r['status']!='ok' for r in rows)

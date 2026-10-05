@@ -167,3 +167,18 @@ def test_vehicle_timing_includes_reference_generation(monkeypatch):
  assert all(d['computation_s']==.5 for d in result['controller_diagnostics'])
  assert result['metrics']['controller_time_p50_ms']==500.
  assert result['metrics']['deadline_miss_pct']==100.
+
+
+def test_low_speed_vehicle_acceleration_respects_tire_force_budget():
+ from ctrv.vehicle import derivative
+ config=VehicleConfig()
+ for speed in [.05,.2,.5,1.,2.]:
+  for mu in [.1,.25,.9]:
+   x=np.array([0.,0.,speed,.3,.2,.8,2.,.3])
+   rates=derivative(x,[2.,.3],mu,config)
+   fx=config.mass_kg*(rates[2]-x[4]*x[5])+config.drag_coefficient*speed**2
+   fy=config.mass_kg*(rates[5]+x[4]*speed)
+   assert np.hypot(fx,fy)<=mu*config.mass_kg*9.81+1e-8
+ x=np.zeros(8);x[6]=-3.;x[7]=.3
+ fx,fy,_=tire_forces(x,.25)
+ np.testing.assert_array_equal(fx,np.zeros(2));np.testing.assert_array_equal(fy,np.zeros(2))

@@ -59,7 +59,7 @@ def rolling_reference(path, progress, cap, horizon=20, limits=DEFAULT_LIMITS,
                       config=VehicleConfig(),mu=.9):
     """Time-parameterize the path locally at the governed speed.
 
-    Steady slip angles use inverse saturated tire forces. Acceleration and
+    Steady slip angles approximate inverse saturated tire forces. Acceleration and
     actuator feedforward include the path speed gradient and response lag.
     Remaining transient/reference errors enter the MPC affine defect. A
     reference beyond available friction remains a soft tracking target.

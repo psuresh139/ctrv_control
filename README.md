@@ -95,10 +95,11 @@ Reference verification checks one-step position defects below 2 cm and heading
 defects below 0.002 rad at dt=0.1 s. These are discretization tolerances, not exact
 continuous-time feasibility guarantees between samples.
 
-**Plant limitation:** this remains a kinematic CTRV plant with acceleration and
+**Historical plant limitation:** this comparison retains a kinematic CTRV plant with acceleration and
 yaw-acceleration actuators. Steering is inferred as `atan(wheelbase*yaw_rate/speed)`
 (using a 0.1 m/s denominator floor near rest). There is no steering actuator,
-tire-slip, friction-circle, or dynamic bicycle model yet. Speed, lateral, yaw,
+tire-slip, friction-circle, or dynamic bicycle model in that baseline. The separate
+vehicle add-on below supplies those dynamics. Speed, lateral, yaw,
 and equivalent steering violations are measured rather than hidden by state
 projection. Process noise can move states beyond the envelope. These limits are
 plausible configuration values, not specifications validated for a particular car.
@@ -226,11 +227,12 @@ runs full benchmarks. Diagnostic upload runs even on failure and retains artifac
 for 90 days; local full outputs remain independently available. A written workflow
 is not evidence of hosted execution; report that separately after a hosted run.
 
-## Next milestone: bicycle dynamics
+## Further milestones
 
-Replace equivalent steering diagnostics with a steering/acceleration bicycle
-plant and adapt both controllers and estimators together. Keep the CTRV benchmark
-as a historical comparison. Hardware/tire dynamics are outside this milestone.
+Calibrate the synthetic vehicle and sensor parameters, identify road friction,
+and evaluate a standalone actuator-aware LQR baseline on the same vehicle plant.
+Keep the CTRV benchmark as a historical comparison. Hardware deployment remains
+a separate milestone.
 
 ## Uncertainty and synthetic vehicle add-on
 
@@ -298,3 +300,8 @@ marginal interval); it is descriptive calibration evidence, not joint safety
 coverage. The friction perturbation is scheduled in simulation time, rather
 than located on a spatial road map. A slow-actuator case doubles both response
 time constants without changing sensors or disturbances.
+
+Low-speed tire forces are regularized at the force level, preserving each axle
+friction circle and body force balance. Kinematic acceleration blending is not
+used. Braking a stationary vehicle does not create phantom motion or tire force.
+The model assumes forward driving and projects longitudinal speed at rest.
