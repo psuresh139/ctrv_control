@@ -83,7 +83,7 @@ def run_simulation(q_a=Q_A_PSD, q_alpha=Q_ALPHA_PSD, seed=42, debug=True,
                    segment_commands=None, scenario=None, plant_q_a=Q_A_PSD,
                    plant_q_alpha=Q_ALPHA_PSD, gps_sigma=1.0,
                    limits=DEFAULT_LIMITS, prepared=None, track_half_width=5.0,
-                   controller="lqr", mpc_config=None):
+                   controller="lqr", mpc_config=None, uncertainty_policy=None,friction_mu=.9):
     """Fixed-time tracking baseline. window is retained for API compatibility.
 
     GPS disappears during outage; independent heading remains if configured.
@@ -92,6 +92,10 @@ def run_simulation(q_a=Q_A_PSD, q_alpha=Q_ALPHA_PSD, seed=42, debug=True,
     speed and bicycle-equivalent steering limits are measured, not hidden by
     projecting the state. This is a kinematic CTRV plant, not a tire-slip model.
     """
+    if uncertainty_policy is not None and controller != "mpc":
+        raise ValueError("Uncertainty policy requires MPC")
+    if not np.isfinite(friction_mu) or friction_mu<=0:
+        raise ValueError("Positive finite declared friction required")
     if controller not in ('lqr', 'mpc'):
         raise ValueError('controller must be lqr or mpc')
     if estimator not in ('ekf', 'ukf'):
@@ -143,7 +147,12 @@ def run_simulation(q_a=Q_A_PSD, q_alpha=Q_ALPHA_PSD, seed=42, debug=True,
                         'primal_residual':None,'dual_residual':None,'slack_max':None,
                         'slack_mean':None,'horizon':0,'warm_start':False}
         else:
-            controls[k],diagnostic=mpc.command(k,estimated[k],controls[k-1] if k else Uref[0],bounded)
+            cap=None
+            if uncertainty_policy is not None:
+                cap,_,_=uncertainty_policy.speed_cap(estimated[k],covariances[k],Xref[k,2],ref['curvature'][k],friction_mu)
+            controls[k],diagnostic=mpc.command(k,estimated[k],controls[k-1] if k else Uref[0],bounded,
+                covariance=covariances[k] if uncertainty_policy else None,uncertainty_policy=uncertainty_policy,
+                q_a=q_a,q_alpha=q_alpha,speed_cap=cap)
             raw_controls[k]=controls[k]
         diagnostic['computation_s']=perf_counter()-tick
         controller_diagnostics.append(diagnostic)
@@ -239,8 +248,10 @@ def run_simulation(q_a=Q_A_PSD, q_alpha=Q_ALPHA_PSD, seed=42, debug=True,
             'nis_summary': summary, 'gate_log': gates, 'gps_available': gps_available,
             'K_seq': K_seq, 'estimator': estimator, 'metrics': metrics,
             'nees_log': nees, 'limit_violations': violations,
+            'uncertainty_policy':asdict(uncertainty_policy) if uncertainty_policy else None, 'friction_mu':friction_mu,
             'controller':controller, 'controller_diagnostics':controller_diagnostics,
             'config': {'seed': seed, 'estimator': estimator, 'controller': controller,
+                       'uncertainty_policy':asdict(uncertainty_policy) if uncertainty_policy else None,'friction_mu':friction_mu,
                        'mpc_config': asdict(mpc.config) if mpc else None,
                        'scenario': asdict(scenario), 'limits': asdict(limits),
                        'filter_q_a': q_a, 'filter_q_alpha': q_alpha,

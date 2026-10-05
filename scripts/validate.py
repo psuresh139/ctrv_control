@@ -14,6 +14,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile',choices=['smoke','full'],default='smoke')
     parser.add_argument('--output',type=Path)
+    parser.add_argument('--suite',choices=['all','vehicle'],default='all')
     parser.add_argument('--workers',type=int,default=min(4,os.cpu_count() or 1))
     parser.add_argument('--resume',action='store_true')
     args=parser.parse_args(argv)
@@ -35,14 +36,16 @@ def main(argv=None):
         with log.open('w') as f:
             result=subprocess.run(command,cwd=ROOT,env=env,stdout=f,stderr=subprocess.STDOUT)
         stages.append({'stage':name,'exit_code':result.returncode,'log':str(log)})
-        (output/'validation.json').write_text(json.dumps({'profile':args.profile,'state':'running','stages':stages},indent=2)+'\n')
+        (output/'validation.json').write_text(json.dumps({'profile':args.profile,'suite':args.suite,'state':'running','stages':stages},indent=2)+'\n')
         print(f'{name}: {"PASS" if result.returncode==0 else "FAIL"}; {log}',flush=True)
         return result.returncode==0
     ok=run('tests',[sys.executable,'-m','pytest','tests','-q','-p','no:cacheprovider',f'--junitxml={output / "junit.xml"}'])
     if ok:
         common=[sys.executable,'scripts/run_benchmarks.py','--workers',str(args.workers)]
         resume=['--resume'] if args.resume else []
-        if args.profile=='smoke':
+        if args.suite=='vehicle':
+            pass
+        elif args.profile=='smoke':
             ok=run('smoke',common+['--seeds','3','--scenarios','nominal','gps_loss_5s','gps_loss_10s',
                                  'gps_outliers','gps_bias','noise_mismatch','deterministic_recovery',
                                  '--output',str(output/'smoke')]+resume)
@@ -53,7 +56,17 @@ def main(argv=None):
             ok=run('representative',common+['--seeds','1','--save-traces','--scenarios','nominal','gps_loss_5s',
                           'gps_loss_10s','gps_outliers','gps_bias','noise_mismatch','deterministic_recovery',
                           '--output',str(output/'representative')]+resume) and ok
-    (output/'validation.json').write_text(json.dumps({'profile':args.profile,'state':'complete' if ok else 'failed',
+    if ok:
+        vehicle=[sys.executable,'scripts/run_vehicle_benchmarks.py','--workers',str(args.workers)]
+        resume=['--resume'] if args.resume else []
+        if args.profile=='smoke':
+            ok=run('vehicle_smoke',vehicle+['--seeds','3','--duration','30','--output',str(output/'vehicle_smoke')]+resume) and ok
+            ok=run('vehicle_gps_only_smoke',vehicle+['--seeds','1','--duration','30','--no-heading','--scenarios',
+                'nominal','gps_loss_5s','gps_loss_10s','--output',str(output/'vehicle_gps_only_smoke')]+resume) and ok
+        else:
+            ok=run('vehicle_comparison',vehicle+['--seeds','20','--output',str(output/'vehicle_comparison')]+resume) and ok
+            ok=run('vehicle_representative',vehicle+['--seeds','1','--save-traces','--output',str(output/'vehicle_representative')]+resume) and ok
+    (output/'validation.json').write_text(json.dumps({'profile':args.profile,'suite':args.suite,'state':'complete' if ok else 'failed',
                                                       'stages':stages},indent=2)+'\n')
     return 0 if ok else 1
 

@@ -108,7 +108,8 @@ class MPCController:
         self.templates[k]=(N,nx,nu,sparse.triu(P,format='csc'),C,np.array(lo),np.array(hi),q,D,W)
         return self.templates[k]
 
-    def command(self,k,state,previous_control,fallback):
+    def command(self,k,state,previous_control,fallback,covariance=None,uncertainty_policy=None,
+                q_a=2.,q_alpha=.05,speed_cap=None):
         start=perf_counter(); c=self.config
         N,nx,nu,P,C,lower,upper,q,D,W=self.template(k)
         lower=lower.copy();upper=upper.copy();q=q.copy()
@@ -117,11 +118,24 @@ class MPCController:
         ff=self.ref['u_ref'][k:k+N].reshape(-1)
         difference=D@ff;difference[:2]-=previous_control
         q[nx:nx+nu]=2*(D.T@(W@difference))
+        if uncertainty_policy is not None and uncertainty_policy.speed_control and speed_cap is not None:
+            fallback=np.asarray(fallback).copy()
+            fallback[0]=min(fallback[0],(speed_cap-state[2])/DT)
+        tightening=0.
+        if uncertainty_policy is not None:
+            from ctrv.uncertainty import tighten_bounds
+            if covariance is None:raise ValueError('Uncertainty MPC requires covariance')
+            if speed_cap is None:speed_cap=self.limits.max_speed
+            tightening,_=tighten_bounds(self,k,upper,covariance,q_a,q_alpha,uncertainty_policy,speed_cap)
+            for i in range(1,N+1) if uncertainty_policy.speed_control else []:
+                target=min(speed_cap,self.ref['states'][k+i,2])-self.ref['states'][k+i,2]
+                q[5*i:5*i+5]-=2*self.Q@np.array([0.,0.,target,0.,0.])*(c.terminal_multiplier if i==N else 1.)
         warm=N in self.workspaces
         if not warm:
             workspace=self.osqp.OSQP()
             workspace.setup(P=P,q=q,A=C,l=lower,u=upper,verbose=False,
-                            warm_starting=True,adaptive_rho=False,rho=c.rho,
+                            warm_starting=True,adaptive_rho=uncertainty_policy is not None,
+                            adaptive_rho_interval=50,rho=c.rho,
                             eps_abs=c.eps_abs,eps_rel=c.eps_rel,max_iter=c.max_iter,
                             polishing=True,check_termination=25)
             self.workspaces[N]=workspace
@@ -147,7 +161,7 @@ class MPCController:
             return bounded,{'status':f'solver error: {type(exc).__name__}', 'solved':False,
                             'fallback':True,'iterations':0,'primal_residual':None,
                             'dual_residual':None,'slack_max':None,'slack_mean':None,
-                            'horizon':N,'warm_start':warm,'computation_s':perf_counter()-start}
+                            'horizon':N,'warm_start':warm,'tightening_max':tightening,'speed_cap':speed_cap,'computation_s':perf_counter()-start}
         info=result.info
         finite=result.x is not None and np.all(np.isfinite(result.x))
         command=self.ref['u_ref'][k]+result.x[nx:nx+2] if finite else np.asarray(fallback).copy()
@@ -166,4 +180,4 @@ class MPCController:
                         'iterations':int(info.iter),'primal_residual':float(info.prim_res),
                         'dual_residual':float(info.dual_res),'slack_max':float(slack.max()) if valid else None,
                         'slack_mean':float(slack.mean()) if valid else None,
-                        'horizon':N,'warm_start':warm,'computation_s':perf_counter()-start}
+                        'horizon':N,'warm_start':warm,'tightening_max':tightening,'speed_cap':speed_cap,'computation_s':perf_counter()-start}

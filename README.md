@@ -231,3 +231,70 @@ is not evidence of hosted execution; report that separately after a hosted run.
 Replace equivalent steering diagnostics with a steering/acceleration bicycle
 plant and adapt both controllers and estimators together. Keep the CTRV benchmark
 as a historical comparison. Hardware/tire dynamics are outside this milestone.
+
+## Uncertainty and synthetic vehicle add-on
+
+The historical CTRV/LQR/MPC comparison remains unchanged by default. The new
+vehicle experiments use eight states: position, longitudinal speed, body
+heading, yaw rate, lateral speed, acceleration actuator and steering actuator.
+The dynamic bicycle includes first-order actuator response, bounded acceleration
+jerk and steering rate, aerodynamic drag, fixed axle normal loads, and smooth
+combined longitudinal/lateral tire-force saturation inside each axle's friction
+circle. Parameters are synthetic; suspension, wheel rotation, load transfer,
+friction identification and hardware validation are outside this model.
+
+The vehicle EKF and UKF predict the same discrete RK4 model as the plant. They
+use commands and GPS/heading observations, never the true hidden state or the
+realized disturbance. Vehicle MPC optimizes acceleration and steering demands
+with hard command bounds, affine reference defects, a 20-step horizon, warm
+starts, normalized soft envelopes and bounded model-consistent LQR fallback.
+It predicts physical lateral, longitudinal and yaw acceleration, rather than
+using CTRV acceleration proxies. Local Gaussian uncertainty margins use
+`Phi^-1(confidence) * sqrt(g P g.T)` on each constraint side; steering-rate
+margins retain adjacent-state covariance. These are open-loop, marginal risk
+surrogates. Soft slack, nonlinear tire saturation, correlated constraints and
+miscalibrated covariance prevent a formal chance-feasibility or safety claim.
+
+Four paired policies isolate the additions: `mpc`, `tightening`, `speed`, and
+`uncertainty` (both). The speed governor reduces target speed with lateral
+position and heading uncertainty and reserves 20% of the declared friction
+budget for cornering. The reference follows estimated path progress and is
+locally retimed; slowing does not cause a fixed-time goal to run away. The time
+budget is twice the historical reference duration, and completion time is
+reported explicitly. The same geometry and vehicle limits apply to every
+policy. Friction is declared available equally to all policies; this is not an
+experiment in estimating road friction.
+
+Vehicle command disturbance PSDs are explicitly in acceleration-demand and
+steering-demand units (`2.0` and `0.00005`, respectively). They are synthetic,
+not copied numerically from CTRV yaw-acceleration units. Commands are disturbed
+before bounded actuator integration, rather than adding instantaneous Gaussian
+jumps to the vehicle state. Sensor settings and random draws are shared across
+policies. Vehicle results are a new comparison, not directly interchangeable
+with historical CTRV scores.
+
+```bash
+.venv/bin/python scripts/run_vehicle_benchmarks.py --seeds 3 --workers 4 \
+  --save-traces --output vehicle_results
+.venv/bin/python scripts/validate.py --profile smoke
+.venv/bin/python scripts/validate.py --profile full --suite vehicle
+```
+
+Default smoke validation runs existing controller tests and benchmarks, plus
+three vehicle seeds across ten scenarios, four policies and both estimators
+at a 30-second horizon, and a GPS-only vehicle check. Full vehicle validation
+uses 20 seeds across ten scenarios (1,600 runs) and 80 representative traces.
+The default full suite also runs the original 2,640-run CTRV comparison and its
+28 traces. Checkpoints are atomic and resumable only with matching source,
+configuration, dependencies, platform, thread settings and seeds. Execution
+failures stay visible and fail validation. Reports include paired bootstrap
+intervals, per-component violations, solver fallback, slack, covariance
+consistency, friction utilization, completion time and descriptive controller
+timing. Preserve local result directories independently of CI retention.
+
+Vehicle NEES has eight state dimensions. Reported posterior position and heading
+interval coverage uses a one-sided 99% quantile on both sides (a nominal 98%
+marginal interval); it is descriptive calibration evidence, not joint safety
+coverage. The friction perturbation is scheduled in simulation time, rather
+than located on a spatial road map. A slow-actuator case doubles both response
+time constants without changing sensors or disturbances.
