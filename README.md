@@ -1,133 +1,233 @@
-# CTRV EKF-LQR: Optimal Trajectory Control Under Sensor Noise
+# LQR versus MPC under GPS failure
 
-A closed-loop autonomous vehicle control system that keeps a ground vehicle on a reference path when its only position information comes from noisy GPS.
+A reproducible vehicle-control benchmark investigating how estimation uncertainty
+and actuator constraints affect trajectory tracking when GPS disappears.
 
-The system solves two coupled problems: **estimating where the vehicle actually is** (despite sensor noise) and **computing the minimum-effort steering commands** to bring it back on track. Both problems are instances of optimal inference under uncertainty — the mathematical framework that underlies robotics, autonomous systems, and any platform that has to act on imperfect real-world data.
+**Current milestone:** cleaned CTRV mathematics, feasible reference generation,
+and an EKF/UKF + LQR/MPC comparison. Both controllers use the same track,
+sensors, limits, underlying random draws, and success criteria. MPC constrains
+its linearized predictions; actual noisy-plant violations are measured separately.
 
-![Simulation Results](simulation_results.png)
-
-*Six-panel output: trajectory tracking (top-left), position error over time (top-right), LQR gain magnitude along the track (middle-left — note higher gains at corners), filter health via NIS (middle-right), estimation uncertainty (bottom-left), velocity tracking (bottom-right).*
-
----
-
-## What the System Does
-
-A 5-state vehicle model tracks position (x, y), speed, heading, and yaw rate around a COTA-inspired racetrack with S-curves, a long straight, and a hairpin. The vehicle receives noisy GPS measurements every 100ms. From those measurements alone it must stay within ~1.8m of the reference path at speeds up to 15 m/s.
-
-**Stage 1 — State Estimation (EKF / UKF)**
-
-The vehicle's true position is hidden — only noisy observations are available. The filter maintains a probability distribution over possible states and updates it every timestep by fusing the dynamics model prediction with the new sensor measurement. The Kalman gain optimally weights model confidence against sensor confidence.
-
-Two estimators are implemented and interchangeable:
-- **EKF** (Extended Kalman Filter): linearizes the nonlinear vehicle dynamics at each step via a numerical Jacobian, then applies the standard linear Kalman update
-- **UKF** (Unscented Kalman Filter): propagates 11 deterministically chosen sigma points through the full nonlinear model, recovering mean and covariance without linearization
-
-**Stage 2 — Optimal Control (LTV-LQR)**
-
-Given the state estimate, the controller computes the minimum-cost acceleration and yaw commands to minimize tracking error. It solves a finite-horizon quadratic cost problem by sweeping the Riccati recursion backward from the terminal condition:
-
-```
-S_k = R + B_k^T P_{k+1} B_k
-K_k = S_k^{-1} B_k^T P_{k+1} A_k
-P_k = Q + A_k^T P_{k+1} (A_k - B_k K_k)
-```
-
-Gains are curvature-scheduled: tighter corners use higher position weights and lower yaw-accel penalty, allowing aggressive steering where the geometry demands it. The LQR stiffness map (panel 3) shows this working — gains are visibly higher at the S-curves and hairpin.
-
----
-
-## Key Engineering Decisions
-
-**Why the backward Riccati recursion instead of DARE per step**
-
-The original notebook called `scipy.linalg.solve_discrete_are` at every timestep. This failed ~50 times per run because individual linearized systems at high-curvature sections were not stabilizable in isolation. The backward sweep solves one global optimization over the whole trajectory — the cost-to-go propagates corner awareness backward in time, so the controller starts preparing for the hairpin before it arrives.
-
-**Why the Q matrix needs a lateral disturbance term**
-
-Process noise for a vehicle is dominated by longitudinal acceleration uncertainty, which projects through heading as `[cos(ψ), sin(ψ), ...]`. At ψ=0°, this gives `Q[y,y] = 0` — the filter believes it has zero uncertainty in the lateral direction. A filter that confident ignores lateral measurement corrections entirely, causing gradual divergence. Adding 10% lateral disturbance noise through the perpendicular direction `[-sin(ψ), cos(ψ), ...]` guarantees Q is full rank at every heading.
-
-**Why numerical Jacobians in the EKF**
-
-The analytical Jacobian was derived for the uncontrolled baseline model (constant yaw rate, first-order heading). The controlled plant integrates heading to second order (`½αΔt²`) and uses updated velocity/yaw-rate in the arc formula. The mismatch is ~0.8% per step in position-heading partial derivatives — small but accumulating over hundreds of steps. The numerical Jacobian is computed from the actual controlled dynamics, eliminating the model-controller inconsistency.
-
----
-
-## Results
-
-| Configuration | Mean Error | Max Error | Stable (10 seeds) |
-|---|---|---|---|
-| Original notebook | Diverged ~30s | — | — |
-| Bug fixes only | 6.74 m | ~18 m | 8/10 |
-| Wider actuator bounds + LQR retune | 3.17 m | 7.7 m | 6/10 |
-| + Curvature scheduling + error clamp | 3.04 m | 8.6 m | 10/10 |
-| + IMU heading sensor (5°) | 2.27 m | 2.6 m | 10/10 |
-| + Softened track geometry | **1.78 m** | **2.0 m** | **10/10** |
-
----
-
-## Quickstart
+## Run it
 
 ```bash
-git clone <repo>
-cd ctrv-ekf-lqr
-pip install -r requirements.txt
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock.txt
+source .venv/bin/activate
+python scripts/run_simulation.py --controller mpc --scenario gps_loss_5s --save gps_loss.png
+python scripts/run_simulation.py --scenario gps_loss_10s --no-heading --save gps_only_loss.png
+python -m pytest tests/ -q
 
-# Run with default settings (UKF + softened track + IMU heading)
-python scripts/run_simulation.py
+# Full comparison: six scenarios, two estimators/controllers (2,400 runs)
+python scripts/run_benchmarks.py --seeds 100 --controllers lqr mpc --workers 4 --output benchmark_results
 
-# Save plot to a specific path
-python scripts/run_simulation.py --save my_results.png
+# Prediction-only outages: no independent heading observations
+python scripts/run_benchmarks.py --seeds 100 --no-heading \
+  --scenarios nominal gps_loss_5s gps_loss_10s --output gps_only_results
 
-# Compare EKF vs UKF
-python scripts/run_simulation.py --estimator ekf --save ekf_results.png
-python scripts/run_simulation.py --estimator ukf --save ukf_results.png
-
-# GPS-only (no IMU heading)
-python scripts/run_simulation.py --no-heading
-
-# Run tests
-python -m pytest tests/ -v
+# Short smoke run; optionally preserve state/covariance/sensor traces
+python scripts/run_benchmarks.py --seeds 3 --save-traces --output smoke_results
 ```
 
----
+The isolated environment uses requirements.lock.txt, including pinned OSQP and pytest.
+The core dependencies are NumPy, SciPy, Matplotlib, and OSQP.
+Use the recorded package versions in each manifest to recreate that environment.
+Seeded runs are deterministic within an environment; cross-platform bitwise
+identity is not promised.
 
-## Codebase
+## Clean mathematics
 
-```
-ctrv/
-├── constants.py    State indices, dimensions, noise defaults, track geometry
-├── model.py        CTRV dynamics (controlled + baseline), analytical + numerical Jacobians
-├── noise.py        Heading-dependent CWNA process noise Q(ψ)
-├── ekf.py          EKF and UKF estimators, NIS diagnostics
-├── lqr.py          LTV linearization, backward Riccati sweep, curvature scheduling
-└── trajectory.py   Reference path generation from waypoints (cubic spline + ramp smoothing)
-
-scripts/
-├── run_simulation.py   Main closed-loop simulation and 6-panel dashboard
-└── tune_ekf.py         NIS-based Q/R parameter sweep
-
-tests/
-└── test_all.py         25 unit tests (model, noise, EKF, UKF, LQR)
-```
-
----
-
-## Background
-
-This project started as a final project for an applied numerical methods course, implementing EKF + LQR from scratch in a single notebook. The original notebook diverged at t≈30s due to three bugs:
-
-1. **Q rank deficiency** — longitudinal-only noise projection produces Q[y,y]=0 at ψ=0
-2. **Jacobian–dynamics mismatch** — analytical Jacobian derived for uncontrolled model, applied to controlled plant
-3. **DARE failure** — solving an infinite-horizon problem at each step of a time-varying trajectory
-
-The refactored codebase fixes all three, adds the UKF, implements curvature-scheduled gains, and packages everything with a test suite. The core mathematics is unchanged — the same EKF predict-update cycle and Riccati recursion from the notebook — just implemented correctly and robustly.
-
----
-
-## Dependencies
+The state is `[x, y, speed, heading, yaw_rate]`; inputs are longitudinal and yaw
+acceleration. The controlled model integrates
 
 ```
-numpy >= 1.24
-scipy >= 1.10
-matplotlib >= 3.7
+x_dot = speed * cos(heading)
+y_dot = speed * sin(heading)
+speed_dot = acceleration
+heading_dot = yaw_rate
+yaw_rate_dot = yaw_acceleration
 ```
+
+Position uses eight-point Gaussian quadrature of the same speed/heading
+polynomials used for the other states. Braking integrates translational motion
+only until speed reaches zero. Numerical state/input Jacobians wrap heading
+*differences*, avoiding branch-cut artifacts at ±π. The baseline analytical
+Jacobian includes the correct zero-yaw-rate limit.
+
+The UKF computes its heading mean in a local chart anchored at the central sigma
+point. Both filters wrap heading innovations and support GPS+heading,
+heading-only, or prediction-only updates. The linear measurement update includes
+additive process covariance in innovation and cross-covariance, and uses Joseph
+form. The heading chart assumes a locally concentrated distribution; multimodal
+or broadly ambiguous headings require a different estimator.
+
+Process covariance uses local-heading CWNA longitudinal/angular blocks and an
+explicit heuristic lateral disturbance floor. It is an approximation, not an
+exact discretization of all nonlinear uncertainty coupling. Rank-deficient Q is
+valid; full rank is not a requirement for a functioning Kalman filter.
+
+## Feasible references and explicit limits
+
+A clamped spline specifies geometry. Numerical **actual spline arc length** sets
+travel time. Heading and curvature come from spline derivatives; yaw rate is
+`curvature * speed`. Legacy segment commands supply speed ceilings; their yaw
+rate column is ignored because geometry determines yaw rate.
+
+Forward/backward speed passes enforce acceleration/braking. Global time dilation
+then enforces sampled yaw acceleration, steering rate, and lateral limits.
+Feedforward comes from finite differences of the final speed/yaw-rate states;
+commands are never clipped independently of the reference. Endpoint samples land
+on the final waypoint at a whole timestep. Generation fails if geometry exceeds
+the steering-curvature limit.
+
+Default illustrative limits in `ctrv/limits.py`:
+
+| Quantity | Limit |
+|---|---:|
+| Speed | 15 m/s |
+| Acceleration / braking magnitude | 3 / 5 m/s² |
+| Lateral acceleration | 3 m/s² |
+| Yaw rate / yaw acceleration | 0.6 rad/s / 1.5 rad/s² |
+| Bicycle-equivalent wheelbase | 2.7 m |
+| Steering / steering rate | 35° / 45° per second |
+
+Reference verification checks one-step position defects below 2 cm and heading
+defects below 0.002 rad at dt=0.1 s. These are discretization tolerances, not exact
+continuous-time feasibility guarantees between samples.
+
+**Plant limitation:** this remains a kinematic CTRV plant with acceleration and
+yaw-acceleration actuators. Steering is inferred as `atan(wheelbase*yaw_rate/speed)`
+(using a 0.1 m/s denominator floor near rest). There is no steering actuator,
+tire-slip, friction-circle, or dynamic bicycle model yet. Speed, lateral, yaw,
+and equivalent steering violations are measured rather than hidden by state
+projection. Process noise can move states beyond the envelope. These limits are
+plausible configuration values, not specifications validated for a particular car.
+
+## Reproducible scenarios
+
+- Nominal GPS and an independent 5° heading sensor.
+- GPS loss for 5 or 10 seconds, starting at t=15 s; heading remains available.
+- GPS outliers on 5% of steps (20 m Gaussian injection).
+- Constant GPS bias (+3 m x, −2 m y).
+- Fourfold true process covariance with unchanged filter tuning.
+
+With `--no-heading`, GPS outages become prediction-only periods. Gating uses the
+99th chi-squared percentile for the **currently available measurement dimension**.
+Missing innovations are NaN, not artificial zero measurements; rejected
+innovations stay in the health summary.
+
+Independent local RNG streams keep the underlying process/sensor draws paired
+across estimators and scenarios. Changing filter Q does not change true noise
+parameters. The true process covariance is state-dependent, so realized noise
+vectors can differ after trajectories diverge. The simulator does not reset the
+global NumPy random generator.
+
+LQR uses fixed-time reference indexing, feedforward plus feedback, and explicit
+asymmetric acceleration/yaw-acceleration clipping. The earlier error clamp and
+spatial/temporal index heuristics are removed so the baseline's objective and
+failure modes are directly reviewable.
+
+## What the benchmark reports
+
+`runs.csv` / `runs.json` contain each seed's cross-track RMSE/p95/max, heading
+error, estimation RMSE, outage error, endpoint progress, completion, saturation,
+physical-limit violations, all-innovation NIS/DOF, and NEES. Cross-track distance
+uses projection onto the reference polyline, rather than distance to a stale
+reference sample. For this non-self-intersecting track, a local segment search
+around the nearest reference vertex supplies the projection.
+
+Completion requires ≥98% final progress and an endpoint error ≤5 m. Staying on
+track requires all cross-track distances ≤5 m. **Success additionally requires
+zero sampled physical-envelope violations.** A completed lap can fail that
+criterion. Control energy/rate diagnostics combine unlike input units and must
+not be interpreted as physical energy in joules.
+
+`summary.json` contains seed-level means and bootstrap 95% intervals (2,000
+resamples, fixed bootstrap seed). Intervals are descriptive; five-seed smoke
+results are not strong statistical evidence. Missing metrics are null, failed
+runs remain in completion/success denominators, and the CLI returns nonzero on
+execution failures. NEES has a five-state target; NIS/DOF has target 1, but means
+alone do not establish formal filter consistency.
+
+`manifest.json` records source SHA-256, Git revision/status, Python and dependency
+versions, seed lists, effective sensor/plant/filter/controller configurations,
+reference duration, and limits. Optional `.npz` files preserve full traces.
+Historical README accuracy/stability claims are superseded; compare new results
+only on identical benchmark configurations.
+
+## Code map
+
+- `ctrv/model.py`: consistent controlled dynamics and angle-aware Jacobians.
+- `ctrv/ekf.py`: EKF/UKF prediction/update and dimension-aware NIS summaries.
+- `ctrv/noise.py`: documented approximate process covariance.
+- `ctrv/limits.py`: explicit vehicle-envelope configuration.
+- `ctrv/trajectory.py`: arc-length geometry, speed planning, retiming, defect checks.
+- `ctrv/lqr.py`: linearization and finite-horizon Riccati baseline.
+- `ctrv/simulation.py`: sensor failures, independent RNGs, control loop, metrics.
+- `scripts/run_benchmarks.py`: paired-seed runs, exports, provenance, summaries.
+- `ctrv/mpc.py`: sparse constrained MPC and solver diagnostics.
+- `scripts/validate.py`: local smoke/full test and benchmark pipeline.
+- `tests/test_regressions.py`: integration, branch cuts, process covariance,
+  feasible references, outages, rejection logging, and reproducibility.
+
+## Constrained MPC
+
+`MPCConfig` defaults to a 20-step / 2 s horizon, terminal weight 10×Q, input-change
+weights (0.5, 5), and normalized slack penalty 10,000×s² + 1,000×s. Sparse LTV
+dynamics include the reference's one-step affine defect. Angle deviations use a
+local chart; terminal horizons shorten instead of inventing post-track motion.
+
+Actuator bounds are hard. Predicted speed, yaw rate, lateral acceleration,
+bicycle-equivalent steering/rate, and the ±5 m local track corridor use nonnegative
+normalized slack. Lateral and steering quantities are linearized about the
+reference; this is a local model, not a nonlinear feasibility guarantee.
+
+OSQP uses eps_abs=eps_rel=1e-5, max_iter=4,000, fixed rho=3, adaptive_rho=False,
+polishing, and shifted warm starts. Only finite `solved` outputs with actuator
+violations ≤1e-4 are accepted; tiny numerical excesses are clipped to the bounds.
+Unaccepted results and solver exceptions use bounded LQR fallback and remain in
+solver-status/fallback reports. Missing OSQP raises an installation error.
+
+Each simulation owns its warm-start state. Reference QP templates are cached;
+computation timing includes first-use template construction, update, and solve.
+Timings and 100 ms deadline misses are descriptive and machine-dependent.
+
+## Durable validation
+
+```bash
+python scripts/validate.py --profile smoke --workers 4 --output validation_results/smoke
+python scripts/validate.py --profile full --workers 4 --output validation_results/full
+# Continue an interrupted matching run:
+python scripts/validate.py --profile full --workers 4 --output validation_results/full --resume
+```
+
+Smoke runs tests (including both CLIs, deterministic recovery, solver failure and
+checkpoint resume), then three seeds across seven scenarios, two estimators, and
+two controllers. Full runs tests, 2,400 heading-enabled comparisons, 240 GPS-only
+comparisons, and 28 representative trace runs including deterministic recovery.
+
+`validation.json`, JUnit XML, stage logs, complete configurations, source hashes,
+exact installed dependency versions, and benchmark artifacts are preserved.
+Per-run JSON checkpoints and NPZ traces use atomic replacement. Resume requires
+matching source, configuration, dependencies, Python/platform, and seed list.
+The worker count can change on resume; timing results then describe the original
+execution of each checkpoint. Failed checkpoints remain failures, not automatic
+silent retries: use a new output directory after fixing their cause.
+
+`paired_comparisons.json` reports MPC-minus-LQR differences and seed-bootstrap
+intervals; failed runs count as incomplete/unsuccessful. Numeric differences use
+only pairs with two successful executions and report their count. CSV records
+include full configurations and solver-status counts. Raw NPZ diagnostics include
+solver status, iterations, residuals, slack, fallback, and controller timing.
+
+GitHub Actions runs smoke validation on Ubuntu/Python 3.11 and 3.12 and
+macOS/Python 3.12 for pushes and pull requests. A manual Ubuntu/Python 3.12 workflow
+runs full benchmarks. Diagnostic upload runs even on failure and retains artifacts
+for 90 days; local full outputs remain independently available. A written workflow
+is not evidence of hosted execution; report that separately after a hosted run.
+
+## Next milestone: bicycle dynamics
+
+Replace equivalent steering diagnostics with a steering/acceleration bicycle
+plant and adapt both controllers and estimators together. Keep the CTRV benchmark
+as a historical comparison. Hardware/tire dynamics are outside this milestone.

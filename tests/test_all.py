@@ -376,10 +376,10 @@ def test_pick_k_nearest_holds_when_diverging():
           f"(k_use={k_use}, k_prog={k_prog})")
 
 
-def test_ukf_better_than_ekf_on_sharp_turn():
+def test_estimators_finite_on_sharp_turn():
     """
-    On a high-curvature maneuver, UKF posterior should stay closer
-    to truth than EKF posterior (linearization advantage).
+    Both estimators should return finite estimates on a sharp maneuver.
+    Relative accuracy is assessed by paired-seed benchmarks.
     """
     np.random.seed(6)
     # High yaw rate state — stress test for linearization
@@ -405,7 +405,7 @@ def test_ukf_better_than_ekf_on_sharp_turn():
     err_ukf = np.linalg.norm(x_true[:2] - x_ukf[:2])
     print(f"✅ test_ukf_better_than_ekf_on_sharp_turn  "
           f"(EKF err={err_ekf:.4f}m, UKF err={err_ukf:.4f}m)")
-    # Note: single-step difference may be small; the advantage accumulates
+    assert np.isfinite(err_ekf) and np.isfinite(err_ukf)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -444,7 +444,7 @@ if __name__ == '__main__':
     test_ukf_sigma_points_recover_mean_and_cov()
     test_ukf_reduces_residual()
     test_ukf_P_psd()
-    test_ukf_better_than_ekf_on_sharp_turn()
+    test_estimators_finite_on_sharp_turn()
 
     print("\n" + "=" * 50)
     print("All tests passed ✅")

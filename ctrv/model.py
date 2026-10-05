@@ -1,28 +1,9 @@
-"""
-ctrv/model.py
+"""Controlled CTRV dynamics and angle-aware finite-difference Jacobians.
 
-CTRV (Constant Turn Rate and Velocity) vehicle dynamics.
-
-Provides:
-  - wrap_to_pi              : angle normalization
-  - predict_state_ctrv      : nonlinear discrete state transition f(x, u, dt)
-  - predict_state_ctrv_baseline : uncontrolled CTRV (used for Jacobian validation)
-  - jacobian_F_analytical   : closed-form Jacobian df/dx (used in EKF)
-  - jacobian_numerical      : central-difference Jacobian (used for validation
-                              and LQR linearization)
-
-Design note on two predict functions:
-  predict_state_ctrv         includes control inputs [a, alpha] and integrates
-                             higher-order terms (0.5*alpha*dt^2 in heading).
-                             This is the true simulated plant.
-
-  predict_state_ctrv_baseline is the pure CTRV model with no control and
-                             constant psi_dot over the interval. This is the
-                             model the analytical Jacobian is derived from,
-                             and is used only for validation.
-
-  The mismatch between the two (Test B in the notebook, ~1.93e-3) is expected
-  and confirms the EKF correctly bridges the linearization gap at runtime.
+State: [x, y, speed, heading, yaw_rate]. Inputs: acceleration, yaw acceleration.
+Position integrates the continuous controlled dynamics with Gaussian quadrature;
+heading, speed and yaw rate use their exact polynomial updates. The analytical
+Jacobian is retained only for the uncontrolled baseline and validation.
 """
 
 import numpy as np
@@ -32,12 +13,14 @@ from ctrv.constants import (
 )
 
 
+_QUAD_NODES, _QUAD_WEIGHTS = np.polynomial.legendre.leggauss(8)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Utilities
 # ─────────────────────────────────────────────────────────────────────────────
 
 def wrap_to_pi(a: float) -> float:
-    """Map angle a (rad) into (-pi, pi]."""
+    """Map angles (rad) into [-pi, pi)."""
     return (a + np.pi) % (2 * np.pi) - np.pi
 
 
@@ -56,9 +39,9 @@ def predict_state_ctrv(x_prev: np.ndarray, dt: float,
                a     = longitudinal acceleration (m/s^2)
                alpha = yaw acceleration          (rad/s^2)
 
-    Position update uses the exact circular arc formula when |psi_dot| > EPS,
-    falling back to straight-line integration otherwise. Heading integrates
-    the yaw acceleration to second order (0.5 * alpha * dt^2).
+    Position integrates the controlled continuous dynamics with eight-point
+    Gauss-Legendre quadrature. Heading integrates yaw acceleration exactly.
+    Braking stops translational motion when speed reaches zero.
 
     Parameters
     ----------
@@ -83,29 +66,26 @@ def predict_state_ctrv(x_prev: np.ndarray, dt: float,
     a, alpha = float(u[0]), float(u[1])
     x, y, v, psi, psi_dot = x_prev
 
-    # Velocity and yaw rate update (Euler forward on first-order dynamics)
-    v_new = v + a * dt
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError("dt must be positive and finite")
+    # Integrate the same continuous equations for position and heading:
+    # p_dot = v(t) [cos(psi(t)), sin(psi(t))], v_dot=a, omega_dot=alpha.
+    # Gauss-Legendre quadrature avoids division by yaw rate near straight motion.
+    duration = dt
+    if enforce_nonneg_speed and a < 0 and v + a * dt < 0:
+        duration = max(0.0, min(dt, -v / a))
+    tau = 0.5 * duration * (_QUAD_NODES + 1.0)
+    speed = v + a * tau
     if enforce_nonneg_speed:
-        v_new = max(0.0, v_new)
-    psi_dot_new = psi_dot + alpha * dt
-
-    # Heading: second-order integration captures yaw acceleration effect
-    psi_new = wrap_to_pi(psi + psi_dot * dt + 0.5 * alpha * dt ** 2)
-
-    x_next = np.zeros(N_STATES)
-
-    # Position: exact arc formula when turning, straight-line fallback
-    if abs(psi_dot_new) > EPS:
-        dpsi = psi_dot_new * dt
-        x_next[IDX_X] = x + (v_new / psi_dot_new) * (np.sin(psi + dpsi) - np.sin(psi))
-        x_next[IDX_Y] = y + (v_new / psi_dot_new) * (-np.cos(psi + dpsi) + np.cos(psi))
-    else:
-        x_next[IDX_X] = x + v_new * np.cos(psi) * dt
-        x_next[IDX_Y] = y + v_new * np.sin(psi) * dt
-
-    x_next[IDX_V]      = v_new
-    x_next[IDX_PSI]    = psi_new
-    x_next[IDX_PSIDOT] = psi_dot_new
+        speed = np.maximum(speed, 0.0)
+    heading = psi + psi_dot * tau + 0.5 * alpha * tau**2
+    x_next = np.array([
+        x + 0.5 * duration * np.dot(_QUAD_WEIGHTS, speed * np.cos(heading)),
+        y + 0.5 * duration * np.dot(_QUAD_WEIGHTS, speed * np.sin(heading)),
+        max(0.0, v + a * dt) if enforce_nonneg_speed else v + a * dt,
+        wrap_to_pi(psi + psi_dot * dt + 0.5 * alpha * dt**2),
+        psi_dot + alpha * dt,
+    ])
 
     return x_next
 
@@ -118,22 +98,7 @@ def predict_state_ctrv_baseline(x_prev: np.ndarray, dt: float) -> np.ndarray:
     This is the model the analytical Jacobian (jacobian_F_analytical) is
     derived from. Used ONLY for Jacobian validation — not the live plant.
     """
-    x, y, v, psi, psi_dot = x_prev
-    x_next = np.zeros(N_STATES)
-
-    if abs(psi_dot) > EPS:
-        dpsi = psi_dot * dt
-        x_next[IDX_X] = x + (v / psi_dot) * (np.sin(psi + dpsi) - np.sin(psi))
-        x_next[IDX_Y] = y + (v / psi_dot) * (-np.cos(psi + dpsi) + np.cos(psi))
-    else:
-        x_next[IDX_X] = x + v * np.cos(psi) * dt
-        x_next[IDX_Y] = y + v * np.sin(psi) * dt
-
-    x_next[IDX_V]      = v
-    x_next[IDX_PSI]    = wrap_to_pi(psi + psi_dot * dt)
-    x_next[IDX_PSIDOT] = psi_dot
-
-    return x_next
+    return predict_state_ctrv(x_prev, dt, np.zeros(2), enforce_nonneg_speed=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,6 +170,8 @@ def jacobian_F_analytical(x_prev: np.ndarray, dt: float) -> np.ndarray:
         F[IDX_X, IDX_PSI]      = -v * s_psi * dt
         F[IDX_Y, IDX_V]        = s_psi * dt
         F[IDX_Y, IDX_PSI]      = v * c_psi * dt
+        F[IDX_X, IDX_PSIDOT] = -0.5 * v * s_psi * dt**2
+        F[IDX_Y, IDX_PSIDOT] = 0.5 * v * c_psi * dt**2
         F[IDX_PSI, IDX_PSIDOT] = dt
 
     return F
@@ -236,6 +203,8 @@ def jacobian_numerical(x: np.ndarray, dt: float, f, eps: float = 1e-6) -> np.nda
     for i in range(n):
         dx = np.zeros(n)
         dx[i] = eps
-        J[:, i] = (np.asarray(f(x + dx, dt)) - np.asarray(f(x - dx, dt))) / (2.0 * eps)
+        delta = np.asarray(f(x + dx, dt)) - np.asarray(f(x - dx, dt))
+        delta[IDX_PSI] = wrap_to_pi(delta[IDX_PSI])
+        J[:, i] = delta / (2.0 * eps)
 
     return J

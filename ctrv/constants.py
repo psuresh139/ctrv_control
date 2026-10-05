@@ -92,26 +92,14 @@ SEGMENT_COMMANDS = np.array([
     [5.0,   0.0],
 ])
 
-# ── Control bounds ────────────────────────────────────────────────────────────
-# Widened from original (±3.0, ±1.5) after parameter sweep showed that the
-# tight corners on the COTA track are geometrically infeasible with narrow
-# actuator limits.  The wider yaw-accel bound (±2.5) lets the controller
-# execute the 8 m minimum-radius turns without saturating, while the wider
-# longitudinal bound (±5.0) allows faster speed corrections entering/exiting
-# corners.
+# Legacy bounds retained for compatibility with historical callers/tests.
+# Active simulation/reference envelopes are configured in ctrv.limits.
 U_BOUNDS = {
     'a':     (-5.0, 5.0),   # longitudinal accel (m/s^2)
     'alpha': (-2.5, 2.5),   # yaw accel          (rad/s^2)
 }
 
-# ── LQR cost matrices ─────────────────────────────────────────────────────────
-# Tuned via parameter sweep (see scripts/tune_ekf.py).
-# Key insight: with wider actuator bounds, the controller can afford higher
-# position weight without saturating.  R_alpha reduced from 200→50 because
-# the tight corners REQUIRE aggressive steering (κ=0.125 rad/m).
-#
-# Previous R_alpha=200 made the controller too timid at corners, producing
-# ~6 m mean tracking error even in the noiseless oracle.
+# LQR baseline cost matrices. No superiority or optimal tuning is assumed.
 Q_LQR = np.diag([25.0, 25.0, 2.0, 25.0, 12.0])
 R_LQR = np.diag([5.0, 50.0])
 

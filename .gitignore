@@ -11,3 +11,9 @@ files_final/
 files_final_extracted/
 files_final.zip
 repo/
+
+.venv/
+
+benchmark_results/
+
+validation_results/

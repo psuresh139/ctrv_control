@@ -1,65 +1,10 @@
-"""
-ctrv/ekf.py
+"""EKF and scaled UKF for controlled CTRV with local angle-chart statistics.
 
-State estimators for the 5-state CTRV model.
-
-Contains two estimators with identical external interfaces:
-
-  ekf_step(...)  — Extended Kalman Filter (kept for comparison/baseline)
-  ukf_step(...)  — Unscented Kalman Filter (recommended)
-
-Both return (x_post, P_post, info) so run_simulation.py switches
-estimators with a single line change:
-
-    # EKF
-    x_est, P_est, info = ekf_step(x_est, P_est, z_k, ...)
-
-    # UKF — drop-in replacement
-    x_est, P_est, info = ukf_step(x_est, P_est, z_k, ...)
-
-Why UKF over EKF for CTRV
---------------------------
-The EKF linearizes f(x) about the current estimate using a first-order
-Taylor expansion (the Jacobian F). For the CTRV model, the position
-update equations are nonlinear in both psi and psi_dot simultaneously:
-
-    x_{k+1} = x_k + (v / psi_dot) * (sin(psi + psi_dot*dt) - sin(psi))
-
-Near corners, where psi_dot is large and changing rapidly, the
-linearization error in F accumulates faster than Q can compensate.
-The NIS diagnostic confirmed the filter is not smug — it is simply
-operating outside its valid linearization regime.
-
-The UKF avoids this entirely. Rather than linearizing, it propagates
-2n+1 = 11 deterministically chosen sigma points through the full
-nonlinear dynamics and recovers the predicted mean and covariance
-from the transformed ensemble. This captures second-order effects
-the EKF misses, at no extra model-derivation cost (no Jacobians needed).
-
-UKF sigma-point parameters (Merwe scaled scheme)
--------------------------------------------------
-  alpha : spread of sigma points around the mean
-          small (1e-3) = tight / conservative
-          large (1.0)  = wide, captures heavier tails
-          CTRV standard: alpha = 0.1
-
-  beta  : prior distribution knowledge
-          beta = 2 is optimal for Gaussian distributions
-
-  kappa : secondary scaling; kappa = 0 standard for state estimation
-
-From these: lambda = alpha^2 * (n + kappa) - n
-With n=5, alpha=0.1, kappa=0: lambda = 0.01*5 - 5 = -4.95  (valid)
-
-The 2n+1 = 11 sigma points are:
-  X_0         = x_mean
-  X_{1..n}    = x_mean + col_i( sqrt((n+lambda)*P) )
-  X_{n+1..2n} = x_mean - col_i( sqrt((n+lambda)*P) )
-
-Weights:
-  Wm[0] = lambda / (n + lambda)
-  Wc[0] = lambda / (n + lambda) + (1 - alpha^2 + beta)
-  Wm[i] = Wc[i] = 1 / (2*(n+lambda))   for i = 1..2n
+Both support GPS, heading-only observations, and prediction-only operation.
+The measurement matrix is a selector for Euclidean states or unit heading;
+this is not a general nonlinear measurement API. The UKF handles additive
+process covariance in its linear measurement update using Joseph form.
+Neither estimator is assumed superior without paired-seed benchmarks.
 """
 
 import numpy as np
@@ -88,6 +33,8 @@ class UKFParams:
 
     def __init__(self, alpha: float = 0.1, beta: float = 2.0,
                  kappa: float = 0.0, n: int = N_STATES):
+        if n <= 0 or alpha <= 0 or n + kappa <= 0:
+            raise ValueError('Invalid sigma-point scaling parameters')
         self.alpha = alpha
         self.beta  = beta
         self.kappa = kappa
@@ -213,7 +160,8 @@ def ukf_step(
 
     # ── (4) Predicted mean ────────────────────────────────────────────────
     x_pred = np.einsum('i,ij->j', Wm, X_pred)
-    x_pred[IDX_PSI] = wrap_to_pi(x_pred[IDX_PSI])
+    anchor = X_pred[0, IDX_PSI]
+    x_pred[IDX_PSI] = wrap_to_pi(anchor + Wm @ wrap_to_pi(X_pred[:, IDX_PSI] - anchor))
 
     # ── (5) Predicted covariance ──────────────────────────────────────────
     P_pred = Q_k.copy()
@@ -223,24 +171,15 @@ def ukf_step(
         P_pred += Wc[i] * np.outer(d, d)
     P_pred = _enforce_psd(P_pred)
 
-    # ── (6) Predicted measurement mean ───────────────────────────────────
-    Z_pred = X_pred @ H_meas.T          # (ns, n_meas)
-    z_pred = np.einsum('i,ij->j', Wm, Z_pred)
-
-    # ── (7) Innovation covariance S and cross-covariance P_xz ────────────
-    S    = R_meas.copy()
-    P_xz = np.zeros((n, n_meas))
-    for i in range(ns):
-        dz = Z_pred[i] - z_pred
-        # Wrap heading components of measurement residual
-        for j in range(n_meas):
-            if _meas_has_heading[j]:
-                dz[j] = wrap_to_pi(dz[j])
-        dx = X_pred[i] - x_pred
-        dx[IDX_PSI] = wrap_to_pi(dx[IDX_PSI])
-        S    += Wc[i] * np.outer(dz, dz)
-        P_xz += Wc[i] * np.outer(dx, dz)
+    # H is linear in the local angle chart. Include additive process noise
+    # in BOTH the innovation covariance and state-measurement covariance.
+    z_pred = H_meas @ x_pred
+    S = H_meas @ P_pred @ H_meas.T + R_meas
     S = 0.5 * (S + S.T)
+    P_xz = P_pred @ H_meas.T
+    if z_k is None or n_meas == 0:
+        return x_pred, P_pred, {'nis': np.nan, 'gated': False,
+                                'innov': np.empty(0), 'innov_cov': S}
 
     # ── (8) Innovation and NIS ────────────────────────────────────────────
     innov = z_k - z_pred
@@ -261,8 +200,8 @@ def ukf_step(
         x_post = x_pred + K @ innov
         x_post[IDX_PSI] = wrap_to_pi(x_post[IDX_PSI])
 
-        # UKF covariance update (equivalent to Joseph form)
-        P_post = _enforce_psd(P_pred - K @ S @ K.T)
+        IKH = np.eye(n) - K @ H_meas
+        P_post = _enforce_psd(IKH @ P_pred @ IKH.T + K @ R_meas @ K.T)
 
     return x_post, P_post, {
         'nis': nis, 'gated': gated,
@@ -313,6 +252,10 @@ def ekf_step(
     )
     P_pred = _enforce_psd(F @ P_prev @ F.T + Q_k)
 
+    if z_k is None or n_meas == 0:
+        return x_pred, P_pred, {'nis': np.nan, 'gated': False,
+                                'innov': np.empty(0), 'innov_cov': np.empty((0, 0))}
+
     innov  = z_k - H_meas @ x_pred
     # Wrap heading component(s) of innovation
     _psi_col = np.array([0., 0., 0., 1., 0.])
@@ -344,36 +287,36 @@ def ekf_step(
 # NIS diagnostics  (shared by both estimators)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_nis_summary(nis_log: list, n_meas: int = N_MEAS) -> dict:
+def compute_nis_summary(nis_log: list, n_meas: int = N_MEAS,
+                        degrees_of_freedom=None, gate_probability=0.99) -> dict:
+    """Summarize ALL innovations; missing observations are NaN, not zero.
+
+    Mixed measurement dimensions are normalized by their degrees of freedom.
+    This is descriptive health information, not a formal consistency test.
     """
-    Summarize filter health from a log of NIS values.
-    Target: mean(NIS) ≈ n_meas = 2.
-    """
-    arr = np.array(nis_log)
+    from scipy.stats import chi2
+    arr = np.asarray(nis_log, dtype=float)
+    dof = np.full(arr.shape, n_meas) if degrees_of_freedom is None else np.asarray(degrees_of_freedom)
+    mask = np.isfinite(arr) & (dof > 0)
+    arr, dof = arr[mask], dof[mask]
     return {
-        'mean':           float(np.mean(arr)),
-        'std':            float(np.std(arr)),
-        'min':            float(np.min(arr)),
-        'max':            float(np.max(arr)),
-        'pct_above_gate': float(np.mean(arr > 9.21) * 100),
-        'target':         float(n_meas),
+        'count': int(arr.size),
+        'mean': float(np.mean(arr)) if arr.size else None,
+        'std': float(np.std(arr)) if arr.size else None,
+        'min': float(np.min(arr)) if arr.size else None,
+        'max': float(np.max(arr)) if arr.size else None,
+        'pct_above_gate': float(100 * np.mean(arr > chi2.ppf(gate_probability, dof))) if arr.size else None,
+        'target': float(np.mean(dof)) if arr.size else None,
+        'normalized_mean': float(np.mean(arr / dof)) if arr.size else None,
     }
 
 
 def print_nis_report(summary: dict, label: str = '') -> None:
-    tag = f" [{label}]" if label else ''
-    print(f"=== NIS Filter Health Report{tag} ===")
-    print(f"  Mean NIS : {summary['mean']:.3f}  (target ≈ {summary['target']:.1f})")
-    print(f"  Std  NIS : {summary['std']:.3f}")
-    print(f"  Range    : [{summary['min']:.2f}, {summary['max']:.2f}]")
-    print(f"  % above gate (9.21): {summary['pct_above_gate']:.1f}%")
-    ratio = summary['mean'] / summary['target']
-    if ratio > 2.0:
-        print(f"  ⚠  NIS is {ratio:.1f}x target — Q likely too SMALL")
-    elif ratio < 0.5:
-        print(f"  ⚠  NIS is {ratio:.1f}x target — Q likely too LARGE")
-    else:
-        print(f"  ✅ NIS within acceptable range ({ratio:.2f}x target)")
+    print(f"NIS report {label}: {summary['count']} observed innovations")
+    if summary['count']:
+        print(f"  Mean: {summary['mean']:.3f}; mean DOF: {summary['target']:.2f}")
+        print(f"  Mean NIS/DOF: {summary['normalized_mean']:.3f}")
+        print(f"  Above dimension-aware 99% gate: {summary['pct_above_gate']:.1f}%")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

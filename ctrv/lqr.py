@@ -66,8 +66,9 @@ def linearize_at_point(x_ref: np.ndarray, u_ref: np.ndarray,
         u_p, u_m = u_ref.copy(), u_ref.copy()
         u_p[j] += eps
         u_m[j] -= eps
-        B[:, j] = (predict_state_ctrv(x_ref, dt, u_p) -
-                   predict_state_ctrv(x_ref, dt, u_m)) / (2.0 * eps)
+        delta = predict_state_ctrv(x_ref, dt, u_p) - predict_state_ctrv(x_ref, dt, u_m)
+        delta[IDX_PSI] = wrap_to_pi(delta[IDX_PSI])
+        B[:, j] = delta / (2.0 * eps)
 
     return A, B
 

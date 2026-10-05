@@ -85,7 +85,7 @@ def plot_comparison(r_ekf, r_ukf, save_path=None):
 
     # Position error over time
     ax = axes[1]
-    t = r_ekf['times'][:-1]
+    t = r_ekf['times'][1:]
     ax.plot(t, r_ekf['pos_errs'], 'r-', lw=1.0, label='EKF', alpha=0.8)
     ax.plot(t[:len(r_ukf['pos_errs'])], r_ukf['pos_errs'], 'g-', lw=1.0, label='UKF', alpha=0.8)
     ax.axhline(np.mean(r_ekf['pos_errs']), color='r', ls='--', alpha=0.5,
@@ -118,7 +118,7 @@ if __name__ == '__main__':
     # Head-to-head with original params
     r_ekf, r_ukf = compare_ekf_vs_ukf(q_a=0.5, q_alpha=0.1)
     plot_comparison(r_ekf, r_ukf,
-                    save_path='/mnt/user-data/outputs/ekf_vs_ukf.png')
+                    save_path='ekf_vs_ukf.png')
 
     # UKF sweep
     print("\n" + "=" * 60)
