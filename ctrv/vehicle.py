@@ -91,6 +91,6 @@ def step_vehicle(state,command,dt,mu=1.,config=VehicleConfig(),limits=DEFAULT_LI
         peak=np.maximum(peak,np.max(tire_forces(state,mu,config)[2],axis=-1))
     rates=derivative(state,command,mu,config,limits)
     scalar=lambda v:float(v) if np.ndim(v)==0 else v
-    return state,{'friction_mu':mu,'tire_utilization_max':scalar(peak),'actual_acceleration':scalar(rates[...,2]),'actual_yaw_acceleration':scalar(rates[...,4]),
+    return state,{'friction_mu':mu,'tire_utilization_max':scalar(peak),'actual_acceleration':scalar(rates[...,2]-state[...,4]*state[...,5]),'actual_yaw_acceleration':scalar(rates[...,4]),
                   'actual_lateral_acceleration':scalar(rates[...,5]+state[...,4]*state[...,2]),
                   'actuator_acceleration':scalar(state[...,6]),'actuator_steering':scalar(state[...,7])}

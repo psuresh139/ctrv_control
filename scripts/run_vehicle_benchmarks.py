@@ -108,7 +108,8 @@ def main(argv=None):
             'noise':asdict(VehicleNoise()),'limits':asdict(DEFAULT_LIMITS),
             'mpc':asdict(MPCConfig(rate_weights=(.5,50.))),'Q':Q_VEHICLE.tolist(),'R':R_VEHICLE.tolist(),
             'policy_configurations':{name:asdict(value) if value is not None else None for name,value in POLICIES.items()},
-            'dt':.1,'track_half_width':5.,'default_time_budget_multiplier':2.,
+            'dt':.1,'track_half_width':5.,'speed_measure':'ground-speed magnitude',
+            'acceleration_measure':'body-frame physical acceleration','default_time_budget_multiplier':2.,
             'case_vehicle_overrides':{'actuator_lag':{'acceleration_tau_s':.5,'steering_tau_s':.3}}}
     env=provenance();digest=fingerprint(config,env);args.output.mkdir(parents=True,exist_ok=True)
     manifest_path=args.output/'manifest.json'

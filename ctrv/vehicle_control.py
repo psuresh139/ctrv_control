@@ -100,12 +100,14 @@ def rolling_reference(path, progress, cap, horizon=20, limits=DEFAULT_LIMITS,
 
 def envelope(state,limits=DEFAULT_LIMITS,mu=.9,config=VehicleConfig()):
     rate=derivative(state,state[[6,7]],mu,config,limits)
-    return np.array([state[2],state[4],rate[5]+state[2]*state[4],state[7],rate[2],rate[4]])
+    return np.array([np.hypot(state[2],state[5]),state[4],rate[5]+state[2]*state[4],state[7],rate[2]-state[4]*state[5],rate[4]])
 
 
 def envelope_gradients(state,limits=DEFAULT_LIMITS,mu=.9,config=VehicleConfig()):
     base=envelope(state,limits,mu,config);J=np.zeros((6,8))
-    J[0,2]=1;J[1,4]=1;J[3,7]=1
+    speed=np.hypot(state[2],state[5])
+    if speed>1e-8:J[0,[2,5]]=state[[2,5]]/speed
+    J[1,4]=1;J[3,7]=1
     # Differentiate the physical lateral acceleration, not v*yaw proxy.
     for j in [2,4,5,6,7]:
         eps=1e-5*max(1.,abs(state[j]));a=state.copy();b=state.copy()

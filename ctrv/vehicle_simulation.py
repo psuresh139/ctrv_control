@@ -38,7 +38,7 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
     else:reference,path=prepared
     duration=2*reference['times'][-1] if duration is None else duration
     if not np.isfinite(duration) or duration<=0:raise ValueError('Positive finite duration required')
-    times=np.arange(int(np.ceil(duration/DT))+1)*DT;steps=len(times)-1
+    steps=max(1,int(np.ceil(duration/DT-1e-12)));times=np.arange(steps+1)*DT
     streams=np.random.SeedSequence(seed).spawn(3)
     command_draws=np.random.default_rng(streams[0]).standard_normal((steps,2))
     sensor_draws=np.random.default_rng(streams[1]).standard_normal((steps,3))
@@ -99,11 +99,11 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
     count=len(commands);times=times[:count+1];true=true[:count+1];estimated=estimated[:count+1];covariance=covariance[:count+1]
     commands=np.array(commands);caps=np.array(caps)
     cross,actual_progress,_=path_errors(true[1:,:2],reference['states'])
-    lateral=np.abs([d['actual_lateral_acceleration'] for d in physics]);speed=true[1:,2]
+    lateral=np.abs([d['actual_lateral_acceleration'] for d in physics]);speed=np.hypot(true[1:,2],true[1:,5])
     components={'speed':speed>limits.max_speed+1e-7,
                 'yaw_rate':np.abs(true[1:,4])>limits.max_yaw_rate+1e-7,
-                'yaw_acceleration':np.abs(np.diff(true[:,4])/DT)>limits.max_yaw_accel+1e-7,
-                'longitudinal_acceleration':(np.diff(true[:,2])/DT>limits.max_accel+1e-7)|(np.diff(true[:,2])/DT < -limits.max_braking-1e-7),
+                'yaw_acceleration':np.abs([d['actual_yaw_acceleration'] for d in physics])>limits.max_yaw_accel+1e-7,
+                'longitudinal_acceleration':(np.array([d['actual_acceleration'] for d in physics])>limits.max_accel+1e-7)|(np.array([d['actual_acceleration'] for d in physics]) < -limits.max_braking-1e-7),
                 'lateral_acceleration':lateral>limits.max_lateral_accel+1e-7,
                 'steering':np.abs(true[1:,7])>limits.max_steering+1e-7,
                 'steering_rate':np.abs(np.diff(true[:,7]))/DT>limits.max_steering_rate+1e-7,
@@ -130,6 +130,7 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
              'normalized_slack_mean':float(np.mean(slack_means)) if slack_means else None,
              'tightening_max':float(max(d['tightening_max'] for d in diagnostics)),
              'speed_cap_mean_mps':float(caps.mean()),'speed_max_mps':float(speed.max()),
+             'longitudinal_speed_max_mps':float(true[1:,2].max()),
              'nees_mean':float(nees.mean()),'nees_normalized_mean':float(nees.mean()/8),
              'nis_normalized_mean':float(np.mean(innovation_values)) if innovation_values else None,
              'position_interval_coverage_pct':float(100*np.mean(position_error<=quantile*np.sqrt(np.maximum(0.,position_variance)))),

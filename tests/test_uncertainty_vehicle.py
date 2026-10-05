@@ -182,3 +182,39 @@ def test_low_speed_vehicle_acceleration_respects_tire_force_budget():
  x=np.zeros(8);x[6]=-3.;x[7]=.3
  fx,fy,_=tire_forces(x,.25)
  np.testing.assert_array_equal(fx,np.zeros(2));np.testing.assert_array_equal(fy,np.zeros(2))
+
+
+def test_vehicle_envelopes_use_ground_speed_and_physical_body_acceleration():
+ from ctrv.vehicle import derivative
+ from ctrv.vehicle_control import envelope,envelope_gradients
+ x=np.array([0.,0.,5.,.2,.4,2.,.5,.1]);command=np.array([.5,.1])
+ rates=derivative(x,command,.5)
+ values,G=envelope_gradients(x,mu=.5)
+ assert values[0]==np.hypot(5.,2.)
+ np.testing.assert_allclose(G[0,[2,5]],x[[2,5]]/np.hypot(5.,2.))
+ assert values[4]==rates[2]-x[4]*x[5]
+ y,d=step_vehicle(x,command,.1,mu=.5)
+ post_rates=derivative(y,command,.5)
+ assert d['actual_acceleration']==post_rates[2]-y[4]*y[5]
+ assert d['actual_lateral_acceleration']==post_rates[5]+y[4]*y[2]
+
+
+def test_vehicle_time_grid_does_not_add_a_float_roundoff_step():
+ from ctrv.vehicle_simulation import run_vehicle_simulation
+ result=run_vehicle_simulation(policy='mpc',estimator='ekf',duration=.1*3)
+ assert len(result['commands'])==3
+ assert result['times'][-1]==.1*3
+
+
+def test_vehicle_reference_equilibria_preserve_path_velocity_on_dry_and_wet_surfaces():
+ from ctrv.vehicle import derivative
+ from ctrv.vehicle_control import build_vehicle_path
+ reference,_,_=prepare_reference()
+ for mu in [.9,.45]:
+  path=build_vehicle_path(reference,mu)
+  states=path['states']
+  np.testing.assert_allclose(np.hypot(states[:,2],states[:,5]),reference['states'][:,2],atol=1e-8)
+  rates=derivative(states,states[:,[6,7]],mu)
+  np.testing.assert_allclose(rates[:,[2,4,5]],0.,atol=1e-6)
+  expected=reference['states'][:,2,None]*np.column_stack([np.cos(reference['states'][:,3]),np.sin(reference['states'][:,3])])
+  np.testing.assert_allclose(rates[:,:2],expected,atol=1e-8)

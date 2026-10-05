@@ -259,8 +259,8 @@ miscalibrated covariance prevent a formal chance-feasibility or safety claim.
 
 Four paired policies isolate the additions: `mpc`, `tightening`, `speed`, and
 `uncertainty` (both). The speed governor reduces target speed with lateral
-position and heading uncertainty and reserves 20% of the declared friction
-budget for cornering. The reference follows estimated path progress and is
+position and heading uncertainty and limits nominal cornering demand to 80% of the declared `mu*g`
+friction budget. The reference follows estimated path progress and is
 locally retimed; slowing does not cause a fixed-time goal to run away. The time
 budget is twice the historical reference duration, and completion time is
 reported explicitly. The same geometry and vehicle limits apply to every
@@ -305,3 +305,9 @@ Low-speed tire forces are regularized at the force level, preserving each axle
 friction circle and body force balance. Kinematic acceleration blending is not
 used. Braking a stationary vehicle does not create phantom motion or tire force.
 The model assumes forward driving and projects longitudinal speed at rest.
+
+Vehicle speed constraints and metrics use `hypot(v_long, v_lateral)`. Physical
+body-frame acceleration is `[v_long_dot - yaw_rate*v_lateral,
+v_lateral_dot + yaw_rate*v_long]`; component derivatives alone are not the
+measured acceleration. This keeps sideslip and rotating-frame terms from
+hiding or inventing physical violations.
