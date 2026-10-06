@@ -88,7 +88,7 @@ def vehicle_process_covariance(B, dt, noise=VehicleNoise()):
 
 def vehicle_filter_step(state, covariance, command, dt, mu, observation=None,
                         H=None, R=None, estimator='ekf', noise=VehicleNoise(),
-                        config=VehicleConfig(), limits=DEFAULT_LIMITS, gate=None):
+                        config=VehicleConfig(), limits=DEFAULT_LIMITS, gate=None, prediction_model="linearized"):
     """GPS/heading selector observation update using Joseph covariance form."""
     state = np.asarray(state, float)
     if state.shape != (8,) or not np.all(np.isfinite(state)):
@@ -98,6 +98,12 @@ def vehicle_filter_step(state, covariance, command, dt, mu, observation=None,
         raise ValueError('Estimator must be ekf or ukf')
     predicted, A, B = vehicle_linearization(state, command, dt, mu, config, limits)
     Q = vehicle_process_covariance(B, dt, noise)
+    shift = np.zeros(8)
+    if prediction_model == 'bounded':
+        from ctrv.bounded_uncertainty import command_moments
+        shift, Q = command_moments(state, command, dt, mu, config, limits, noise)
+    elif prediction_model != 'linearized':
+        raise ValueError('Unknown command prediction model')
     if estimator == 'ekf':
         P = A@covariance@A.T+Q
     else:
@@ -109,6 +115,7 @@ def vehicle_filter_step(state, covariance, command, dt, mu, observation=None,
         predicted[3] = wrap_to_pi(anchor+params.Wm@wrap_to_pi(points[:, 3]-anchor))
         errors = points-predicted; errors[:, 3] = wrap_to_pi(errors[:, 3])
         P = np.einsum('i,ij,ik->jk', params.Wc, errors, errors)+Q
+    predicted += shift; predicted[3] = wrap_to_pi(predicted[3])
     P = stabilize_covariance(P)
     info = {'nis': None, 'gated': False, 'dof': 0}
     if observation is None:

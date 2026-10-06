@@ -30,7 +30,8 @@ _PREPARED={}
 
 
 def run_group(job):
-    name,estimator,policy,seeds,heading,duration,output,save_traces,digest=job
+    name,estimator,policy,seeds,heading,duration,output,save_traces,digest=job[:9]
+    prediction_model=job[9] if len(job)>9 else "bounded"
     sensor,mu,patch=CASES[name]
     rows=[]
     for seed in seeds:
@@ -47,7 +48,7 @@ def run_group(job):
                 ref,_,_=prepare_reference();_PREPARED[mu]=(ref,build_vehicle_path(ref,mu))
             vehicle=replace(VehicleConfig(),acceleration_tau_s=.5,steering_tau_s=.3) if name=='actuator_lag' else VehicleConfig()
             result=run_vehicle_simulation(vehicle_config=vehicle,seed=seed,estimator=estimator,policy=policy,scenario=sensor,
-                        mu=mu,patch_mu=patch,heading_sigma_deg=heading,duration=duration,prepared=_PREPARED[mu])
+                        mu=mu,patch_mu=patch,heading_sigma_deg=heading,duration=duration,prepared=_PREPARED[mu],prediction_model=prediction_model)
             for value in result['metrics'].values():
                 if value is not None and not np.isfinite(value):raise ValueError('Nonfinite vehicle metric')
             row.update(status='ok',**result['metrics']);row['config']=result['config']
@@ -59,6 +60,8 @@ def run_group(job):
                 arrays={key:result[key] for key in ['times','true_states','estimated_states','covariances','commands','applied_commands','speed_caps','estimated_progress']}
                 arrays.update({key:np.array([d[key] if d[key] is not None else np.nan for d in diagnostics])
                     for key in ['iterations','primal_residual','dual_residual','fallback','slack_max','slack_mean','tightening_max','computation_s']})
+                arrays['unattainable_acceleration_steps']=np.array([d.get('unattainable_acceleration_steps',0) for d in diagnostics])
+                arrays['acceleration_quantiles']=np.array([d.get('acceleration_quantiles',[]) for d in diagnostics])
                 arrays['tightening_by_quantity']=np.array([d['tightening_by_quantity'] for d in diagnostics])
                 arrays['friction_mu']=np.array([d['friction_mu'] for d in result['vehicle_diagnostics']])
                 arrays['tire_utilization']=np.array([d['tire_utilization_max'] for d in result['vehicle_diagnostics']])
@@ -99,11 +102,12 @@ def main(argv=None):
     parser.add_argument('--scenarios',nargs='+',choices=CASES,default=list(CASES))
     parser.add_argument('--estimators',nargs='+',choices=['ekf','ukf'],default=['ekf','ukf'])
     parser.add_argument('--policies',nargs='+',choices=POLICIES,default=list(POLICIES))
+    parser.add_argument('--prediction-model',choices=['linearized','bounded'],default='bounded')
     parser.add_argument('--duration',type=float);parser.add_argument('--no-heading',action='store_true')
     parser.add_argument('--save-traces',action='store_true');parser.add_argument('--resume',action='store_true')
     parser.add_argument('--output',type=Path,required=True);args=parser.parse_args(argv)
     if args.seeds<1 or args.workers<1:parser.error('Positive seeds and workers required')
-    config={'seeds':list(range(args.seeds)),'scenarios':args.scenarios,'estimators':args.estimators,
+    config={'prediction_model':args.prediction_model,'seeds':list(range(args.seeds)),'scenarios':args.scenarios,'estimators':args.estimators,
             'policies':args.policies,'workers':args.workers,'duration':args.duration,'heading_sigma_deg':None if args.no_heading else 5.,
             'save_traces':args.save_traces,'cases':CASES,'vehicle':asdict(VehicleConfig()),
             'noise':asdict(VehicleNoise()),'limits':asdict(DEFAULT_LIMITS),
@@ -121,7 +125,7 @@ def main(argv=None):
               'state':'running','expected_runs':args.seeds*len(args.scenarios)*len(args.estimators)*len(args.policies),
               'model_limitations':'Synthetic bicycle, fixed axle loads, actuator lag, combined tire limits; local Gaussian soft constraints; no hardware safety claim.'}
     atomic_json(manifest_path,manifest)
-    jobs=[(s,e,p,config['seeds'],config['heading_sigma_deg'],args.duration,str(args.output),args.save_traces,digest)
+    jobs=[(s,e,p,config['seeds'],config['heading_sigma_deg'],args.duration,str(args.output),args.save_traces,digest,args.prediction_model)
           for s in args.scenarios for e in args.estimators for p in args.policies]
     rows=[]
     if args.workers==1:

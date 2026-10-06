@@ -24,7 +24,7 @@ POLICIES={'mpc':None,'tightening':UncertaintyPolicy(speed_control=False),
 
 def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario='nominal',
                            vehicle_config=VehicleConfig(),noise=VehicleNoise(),limits=DEFAULT_LIMITS,
-                           mu=.9,patch_mu=None,heading_sigma_deg=5.,duration=None,prepared=None):
+                           mu=.9,patch_mu=None,heading_sigma_deg=5.,duration=None,prepared=None,prediction_model="bounded"):
     if policy not in POLICIES or estimator not in ('ekf','ukf'):
         raise ValueError('Unknown vehicle policy or estimator')
     if not np.isfinite(mu) or mu<=0 or (patch_mu is not None and (not np.isfinite(patch_mu) or patch_mu<=0)):
@@ -50,7 +50,7 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
     estimated[0,3]=wrap_to_pi(estimated[0,3])
     covariance[0]=np.zeros((8,8));covariance[0,:5,:5]=P_INIT
     covariance[0,5:,5:]=np.diag([.25,.25,np.deg2rad(2.)**2])
-    controller=VehicleMPC(vehicle_config=vehicle_config,limits=limits,noise=noise)
+    controller=VehicleMPC(vehicle_config=vehicle_config,limits=limits,noise=noise,prediction_model=prediction_model)
     selected=POLICIES[policy];commands=[];applied_commands=[];diagnostics=[];physics=[];caps=[];progresses=[];innovations=[]
     progress=0.;index=0;previous=path['states'][0,[6,7]];completed_at=None
     for k in range(steps):
@@ -88,7 +88,7 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
         H=np.array(rows).reshape(-1,8)
         estimated[k+1],covariance[k+1],info=vehicle_filter_step(estimated[k],covariance[k],command,DT,surface,
             np.array(z) if rows else None,H,np.diag(variances),estimator,noise,vehicle_config,limits,
-            gate=float(chi2.ppf(.99,len(rows))) if rows else None)
+            gate=float(chi2.ppf(.99,len(rows))) if rows else None,prediction_model=prediction_model)
         innovations.append(info)
         # Completion is evaluated from truth; it does not steer the controller.
         if np.linalg.norm(true[k+1,:2]-path['states'][-1,:2])<=5.:
@@ -119,7 +119,8 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
     position_variance=np.einsum('ij,ijk,ik->i',normals,covariance[1:,:2,:2],normals)
     position_error=np.abs(np.einsum('ij,ij->i',normals,error[:,:2]))
     quantile=norm.ppf(.99)
-    metrics={'cross_track_rmse_m':float(np.sqrt(np.mean(cross**2))),
+    metrics={'unattainable_acceleration_prediction_pct':float(100*np.mean([d['unattainable_acceleration_steps']/d['horizon'] for d in diagnostics])),
+             'cross_track_rmse_m':float(np.sqrt(np.mean(cross**2))),
              'estimation_position_rmse_m':float(np.sqrt(np.mean(np.sum(error[:,:2]**2,axis=1)))),
              'completed':completed_at is not None,'completion_time_s':completed_at,
              'progress_final':float(actual_progress[-1]),'endpoint_error_m':float(np.linalg.norm(true[-1,:2]-path['states'][-1,:2])),
@@ -154,4 +155,4 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
             'controller_diagnostics':diagnostics,'vehicle_diagnostics':physics,'innovations':innovations,
             'config':{'seed':seed,'estimator':estimator,'policy':policy,'scenario':asdict(scenario),
                       'vehicle':asdict(vehicle_config),'noise':asdict(noise),'limits':asdict(limits),
-                      'mu':mu,'patch_mu':patch_mu,'heading_sigma_deg':heading_sigma_deg,'duration':duration}}
+                      'prediction_model':prediction_model,'mu':mu,'patch_mu':patch_mu,'heading_sigma_deg':heading_sigma_deg,'duration':duration}}

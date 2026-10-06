@@ -327,3 +327,24 @@ Use small matched experiments during controller development. A focused
 overnight comparison is 10 seeds × 4 scenarios (nominal, ten-second outage,
 wet, friction patch) × 2 estimators × 4 policies = 320 simulations.
 Historical source fingerprints remain separate.
+
+### Bounded command uncertainty
+
+Vehicle experiments accept `--prediction-model bounded|linearized`. Bounded
+prediction integrates the unchanged Gaussian command disturbances through
+the same clipping, actuator lag/jerk and tire/RK4 map using positive-weight
+9-by-9 Gauss-Hermite quadrature. Both filters retain clipping-induced mean
+shifts and centered process covariance. State and process uncertainty are
+still combined locally; this does not integrate their full joint nonlinear
+distribution. The historical linearized predictor remains selectable.
+
+For bounded prediction, longitudinal acceleration backoffs use nominal
+confidence quantiles from 512 fixed Sobol Gaussian state samples, projected
+to forward speed and actuator support and evaluated through physical tire
+forces. Other envelope constraints retain local Gaussian margins. This
+snapshot projection and finite quadrature need empirical calibration; they
+are not certified chance constraints. Unattainable acceleration intervals
+remain visible in diagnostics/trace exports rather than silently reducing
+confidence or capping covariance. Sensor noise, limits and geometry are
+unchanged. Mean forecast shifts affect acceleration quantiles; the MPC
+tracking dynamics remain the nominal local plant, not expected dynamics.

@@ -2,7 +2,7 @@
 
 Each QP uses the same discrete nonlinear map as the plant and estimator.
 The eight normalized soft envelopes remain local approximations. Covariance
-margins are open-loop Gaussian surrogates with correlated steering-rate error;
+margins use local Gaussian surrogates or bounded acceleration quantiles;
 there is no claim of joint chance feasibility or nonlinear safety.
 """
 from time import perf_counter
@@ -118,11 +118,13 @@ def envelope_gradients(state,limits=DEFAULT_LIMITS,mu=.9,config=VehicleConfig())
 
 class VehicleMPC:
     def __init__(self, config=None, vehicle_config=VehicleConfig(),limits=DEFAULT_LIMITS,
-                 noise=VehicleNoise(),width=5.):
+                 noise=VehicleNoise(),width=5.,prediction_model="linearized"):
         try:import osqp
         except ImportError as exc:raise ImportError('Vehicle MPC requires OSQP') from exc
         self.osqp=osqp;self.config=config or MPCConfig(rate_weights=(.5,50.));self.vehicle_config=vehicle_config
         if not np.isfinite(width) or width<=0:raise ValueError("Positive finite corridor width required")
+        if prediction_model not in ('linearized','bounded'):raise ValueError('Unknown prediction model')
+        self.prediction_model=prediction_model
         self.limits=limits;self.noise=noise;self.width=width;self.workspaces={};self.solution=None
 
     def command(self,state,covariance,X,U,previous_command,mu=.9,policy=None,speed_cap=None):
@@ -166,10 +168,18 @@ class VehicleMPC:
         for i in range(N):
             for j in range(2):add([(nx+2*i+j,1.)],lo_cmd[j]-U[i,j],hi_cmd[j]-U[i,j])
         covs=[P0];margins=[];quantity_margins=np.zeros(8)
+        shifts=np.zeros((N,8));process_cov=np.array([vehicle_process_covariance(b,DT,self.noise) for b in B])
+        if self.prediction_model=='bounded':
+            from ctrv.bounded_uncertainty import command_moments, acceleration_quantiles
+            shifts,process_cov=command_moments(X[:-1],U,DT,mu,self.vehicle_config,L,self.noise)
+        mean_error=np.zeros(8);forecast_means=[X[0]]
         for i in range(N):
-            covs.append(A[i]@covs[-1]@A[i].T+vehicle_process_covariance(B[i],DT,self.noise))
+            covs.append(A[i]@covs[-1]@A[i].T+process_cov[i])
+            mean_error=A[i]@mean_error+shifts[i]
+            forecast_means.append(X[i+1]+mean_error)
         from scipy.stats import norm
         z=norm.ppf(policy.confidence) if policy is not None and policy.tightening else 0.
+        acceleration_bounds=[];empty_acceleration_intervals=0
         for i in range(1,N+1):
             base,G=envelope_gradients(X[i],L,mu,self.vehicle_config)
             normal=np.zeros(8);heading=X[i,3]+np.arctan2(X[i,5],X[i,2])
@@ -194,9 +204,20 @@ class VehicleMPC:
                 margins.append(margin);quantity_margins[j]=max(quantity_margins[j],margin)
                 entries=[(8*i+t,g[t]/scale) for t in range(8)]
                 if old is not None:entries.extend((8*(i-1)+t,old[t]/scale) for t in range(8))
+                upper_backoff=margin;lower_backoff=lower_margin
+                if j==4 and z>0:
+                    if self.prediction_model=='bounded':
+                        low_quantile,high_quantile=acceleration_quantiles(forecast_means[i],covs[i],policy.confidence,mu,self.vehicle_config,L)
+                        upper_backoff=(high_quantile-value)/scale
+                        lower_backoff=(value-low_quantile)/scale
+                    else:
+                        low_quantile=value-margin*scale;high_quantile=value+margin*scale
+                    acceleration_bounds.append([float(low_quantile),float(high_quantile)])
+                    quantity_margins[j]=max(quantity_margins[j],upper_backoff,lower_backoff)
+                    empty_acceleration_intervals+=int(hi-lo+1e-8 < high_quantile-low_quantile)
                 slack=nx+nu+8*(i-1)+j
-                add(entries+[(slack,-1.)],-np.inf,(hi-value)/scale-margin)
-                add([(col,-val) for col,val in entries]+[(slack,-1.)],-np.inf,(value-lo)/scale-lower_margin)
+                add(entries+[(slack,-1.)],-np.inf,(hi-value)/scale-upper_backoff)
+                add([(col,-val) for col,val in entries]+[(slack,-1.)],-np.inf,(value-lo)/scale-lower_backoff)
         for i in range(8*N):add([(nx+nu+i,1.)],0.,np.inf)
         C=sparse.csc_matrix((data,(rows,cols)),shape=(len(lower),n))
         objective_scale=1./c.slack_quadratic
@@ -245,5 +266,5 @@ class VehicleMPC:
         diagnostic.update(solved=solved,fallback=not solved,horizon=N,warm_start=warm,
                           slack_max=float(slack.max()) if solved else None,
                           slack_mean=float(slack.mean()) if solved else None,
-                          tightening_max=max(margins),tightening_by_quantity=quantity_margins.tolist(),objective_scale=objective_scale,computation_s=perf_counter()-start)
+                          prediction_model=self.prediction_model,acceleration_quantiles=acceleration_bounds,unattainable_acceleration_steps=empty_acceleration_intervals,tightening_max=max(margins),tightening_by_quantity=quantity_margins.tolist(),objective_scale=objective_scale,computation_s=perf_counter()-start)
         return command,diagnostic
