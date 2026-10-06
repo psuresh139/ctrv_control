@@ -165,7 +165,7 @@ class VehicleMPC:
                     +[(nx+2*i+t,-B[i][j,t]) for t in range(2)],defect[j],defect[j])
         for i in range(N):
             for j in range(2):add([(nx+2*i+j,1.)],lo_cmd[j]-U[i,j],hi_cmd[j]-U[i,j])
-        covs=[P0];margins=[]
+        covs=[P0];margins=[];quantity_margins=np.zeros(8)
         for i in range(N):
             covs.append(A[i]@covs[-1]@A[i].T+vehicle_process_covariance(B[i],DT,self.noise))
         from scipy.stats import norm
@@ -186,12 +186,17 @@ class VehicleMPC:
             for j,(value,g,lo,hi,scale,old) in enumerate(quantities):
                 variance=g@covs[i]@g
                 if old is not None:variance+=old@covs[i-1]@old+2*g@A[i-1]@covs[i-1]@old
-                margin=float(z*np.sqrt(max(0.,variance))/scale);margins.append(margin)
+                margin=float(z*np.sqrt(max(0.,variance))/scale)
+                # Steering angle/rate are enforced by the physical actuator map.
+                # Their uncertainty cannot cause a violation of these limits.
+                if j in (3,6):margin=0.
+                lower_margin=0. if j==0 else margin  # groundspeed is nonnegative by definition
+                margins.append(margin);quantity_margins[j]=max(quantity_margins[j],margin)
                 entries=[(8*i+t,g[t]/scale) for t in range(8)]
                 if old is not None:entries.extend((8*(i-1)+t,old[t]/scale) for t in range(8))
                 slack=nx+nu+8*(i-1)+j
                 add(entries+[(slack,-1.)],-np.inf,(hi-value)/scale-margin)
-                add([(col,-val) for col,val in entries]+[(slack,-1.)],-np.inf,(value-lo)/scale-margin)
+                add([(col,-val) for col,val in entries]+[(slack,-1.)],-np.inf,(value-lo)/scale-lower_margin)
         for i in range(8*N):add([(nx+nu+i,1.)],0.,np.inf)
         C=sparse.csc_matrix((data,(rows,cols)),shape=(len(lower),n))
         objective_scale=1./c.slack_quadratic
@@ -240,5 +245,5 @@ class VehicleMPC:
         diagnostic.update(solved=solved,fallback=not solved,horizon=N,warm_start=warm,
                           slack_max=float(slack.max()) if solved else None,
                           slack_mean=float(slack.mean()) if solved else None,
-                          tightening_max=max(margins),objective_scale=objective_scale,computation_s=perf_counter()-start)
+                          tightening_max=max(margins),tightening_by_quantity=quantity_margins.tolist(),objective_scale=objective_scale,computation_s=perf_counter()-start)
         return command,diagnostic

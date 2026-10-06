@@ -229,3 +229,15 @@ def test_covariance_reconstruction_at_large_uncertainty():
  assert np.array_equal(repaired,repaired.T)
  assert np.linalg.eigvalsh(repaired).min()>0
  assert np.isclose(np.linalg.eigvalsh(repaired).max(),np.linalg.eigvalsh((P+P.T)/2).max(),rtol=1e-12)
+
+
+def test_vehicle_tightening_excludes_physically_enforced_actuator_limits():
+ from ctrv.vehicle_control import VehicleMPC
+ from ctrv.mpc import MPCConfig
+ state=np.zeros(8);state[2]=8.
+ X=np.repeat(state[None,:],5,axis=0);X[:,0]=np.arange(5)*.8;U=np.zeros((4,2))
+ controller=VehicleMPC(config=MPCConfig(horizon=4))
+ _,d=controller.command(state,np.eye(8)*.01,X,U,U[0],policy=UncertaintyPolicy())
+ margins=d['tightening_by_quantity']
+ assert margins[3]==0. and margins[6]==0.
+ assert margins[0]>0. and margins[7]>0.

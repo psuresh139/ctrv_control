@@ -61,13 +61,15 @@ def test_trace_export_is_pickle_free_and_resume_requires_trace(tmp_path,monkeypa
     keys=['iterations','primal_residual','dual_residual','fallback','slack_max','slack_mean','tightening_max','computation_s']
     def fake(**kwargs):
         result={k:np.zeros((1,)) for k in ['times','true_states','estimated_states','covariances','commands','applied_commands','speed_caps','estimated_progress']}
-        result.update(metrics={'completed':False},config={},controller_diagnostics=[dict(status='solved',**dict.fromkeys(keys,0.))],
+        result.update(metrics={'completed':False},config={},controller_diagnostics=[dict(status='solved',tightening_by_quantity=[0.]*8,**dict.fromkeys(keys,0.))],
                       vehicle_diagnostics=[{'friction_mu':.9,'tire_utilization_max':.2}])
         return result
     monkeypatch.setattr(bench,'run_vehicle_simulation',fake)
     job=('nominal','ekf','mpc',[0],5.,1.,str(tmp_path),True,'fingerprint')
     bench.run_group(job)
     trace=next((tmp_path/'traces').glob('*.npz'))
+    with np.load(trace,allow_pickle=False) as data:
+        assert data['tightening_by_quantity'].shape==(1,8)
     with np.load(trace,allow_pickle=False) as data:
         assert data['commands'].shape==(1,) and 'tightening_max' in data.files
     trace.unlink()

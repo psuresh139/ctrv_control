@@ -59,6 +59,7 @@ def run_group(job):
                 arrays={key:result[key] for key in ['times','true_states','estimated_states','covariances','commands','applied_commands','speed_caps','estimated_progress']}
                 arrays.update({key:np.array([d[key] if d[key] is not None else np.nan for d in diagnostics])
                     for key in ['iterations','primal_residual','dual_residual','fallback','slack_max','slack_mean','tightening_max','computation_s']})
+                arrays['tightening_by_quantity']=np.array([d['tightening_by_quantity'] for d in diagnostics])
                 arrays['friction_mu']=np.array([d['friction_mu'] for d in result['vehicle_diagnostics']])
                 arrays['tire_utilization']=np.array([d['tire_utilization_max'] for d in result['vehicle_diagnostics']])
                 with temporary.open('wb') as f:

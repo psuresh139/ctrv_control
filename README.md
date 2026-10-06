@@ -311,3 +311,19 @@ body-frame acceleration is `[v_long_dot - yaw_rate*v_lateral,
 v_lateral_dot + yaw_rate*v_long]`; component derivatives alone are not the
 measured acceleration. This keeps sideslip and rotating-frame terms from
 hiding or inventing physical violations.
+
+### Targeted uncertainty revision (October 2026)
+
+Vehicle MPC excludes covariance backoffs for steering angle and steering rate,
+which the actuator integration already enforces, and for the nonnegative
+groundspeed lower bound. Upper speed, physical acceleration, yaw and corridor
+bounds retain Gaussian margins. Diagnostics and vehicle traces include
+`tightening_by_quantity`, ordered as speed, yaw rate, lateral acceleration,
+steering angle, longitudinal acceleration, yaw acceleration, steering rate,
+corridor. This removes redundant margins; it does not establish improved
+completion or calibrated chance-constraint safety.
+
+Use small matched experiments during controller development. A focused
+overnight comparison is 10 seeds × 4 scenarios (nominal, ten-second outage,
+wet, friction patch) × 2 estimators × 4 policies = 320 simulations.
+Historical source fingerprints remain separate.
