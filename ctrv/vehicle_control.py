@@ -201,7 +201,8 @@ class VehicleMPC:
                 # Their uncertainty cannot cause a violation of these limits.
                 if j in (3,6):margin=0.
                 lower_margin=0. if j==0 else margin  # groundspeed is nonnegative by definition
-                margins.append(margin);quantity_margins[j]=max(quantity_margins[j],margin)
+                if not (j==4 and self.prediction_model=='bounded' and z>0):
+                    margins.append(margin);quantity_margins[j]=max(quantity_margins[j],margin)
                 entries=[(8*i+t,g[t]/scale) for t in range(8)]
                 if old is not None:entries.extend((8*(i-1)+t,old[t]/scale) for t in range(8))
                 upper_backoff=margin;lower_backoff=lower_margin
@@ -214,6 +215,7 @@ class VehicleMPC:
                         low_quantile=value-margin*scale;high_quantile=value+margin*scale
                     acceleration_bounds.append([float(low_quantile),float(high_quantile)])
                     quantity_margins[j]=max(quantity_margins[j],upper_backoff,lower_backoff)
+                    if self.prediction_model=='bounded':margins.append(max(0.,upper_backoff,lower_backoff))
                     empty_acceleration_intervals+=int(hi-lo+1e-8 < high_quantile-low_quantile)
                 slack=nx+nu+8*(i-1)+j
                 add(entries+[(slack,-1.)],-np.inf,(hi-value)/scale-upper_backoff)

@@ -59,5 +59,10 @@ def test_acceleration_interval_diagnostic_retains_confidence_and_baseline():
   m=VehicleMPC(config=MPCConfig(horizon=4),noise=VehicleNoise(0,0,0,0,0),prediction_model=model)
   command,d=m.command(x,P,X,U,U[0],policy=UncertaintyPolicy())
   assert np.isfinite(command).all() and len(d['acceleration_quantiles'])==4
+  if model=='bounded':
+   from ctrv.vehicle_control import envelope
+   value=envelope(x)[4]
+   expected=max(max(high-value,value-low)/5. for low,high in d['acceleration_quantiles'])
+   assert np.isclose(d['tightening_by_quantity'][4],expected)
   results.append(d['unattainable_acceleration_steps'])
  assert results[0]>0 and results[1]<results[0]
