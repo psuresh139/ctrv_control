@@ -118,13 +118,15 @@ def envelope_gradients(state,limits=DEFAULT_LIMITS,mu=.9,config=VehicleConfig())
 
 class VehicleMPC:
     def __init__(self, config=None, vehicle_config=VehicleConfig(),limits=DEFAULT_LIMITS,
-                 noise=VehicleNoise(),width=5.,prediction_model="linearized"):
+                 noise=VehicleNoise(),width=5.,prediction_model="linearized",acceleration_constraints=None):
         try:import osqp
         except ImportError as exc:raise ImportError('Vehicle MPC requires OSQP') from exc
         self.osqp=osqp;self.config=config or MPCConfig(rate_weights=(.5,50.));self.vehicle_config=vehicle_config
         if not np.isfinite(width) or width<=0:raise ValueError("Positive finite corridor width required")
         if prediction_model not in ('linearized','bounded'):raise ValueError('Unknown prediction model')
         self.prediction_model=prediction_model
+        self.acceleration_constraints=acceleration_constraints or ('quantile' if prediction_model=='bounded' else 'gaussian')
+        if self.acceleration_constraints not in ('gaussian','quantile'):raise ValueError('Unknown acceleration constraints')
         self.limits=limits;self.noise=noise;self.width=width;self.workspaces={};self.solution=None
 
     def command(self,state,covariance,X,U,previous_command,mu=.9,policy=None,speed_cap=None):
@@ -201,13 +203,14 @@ class VehicleMPC:
                 # Their uncertainty cannot cause a violation of these limits.
                 if j in (3,6):margin=0.
                 lower_margin=0. if j==0 else margin  # groundspeed is nonnegative by definition
-                if not (j==4 and self.prediction_model=='bounded' and z>0):
+                if not (j==4 and self.acceleration_constraints=='quantile' and z>0):
                     margins.append(margin);quantity_margins[j]=max(quantity_margins[j],margin)
                 entries=[(8*i+t,g[t]/scale) for t in range(8)]
                 if old is not None:entries.extend((8*(i-1)+t,old[t]/scale) for t in range(8))
                 upper_backoff=margin;lower_backoff=lower_margin
                 if j==4 and z>0:
-                    if self.prediction_model=='bounded':
+                    if self.acceleration_constraints=='quantile':
+                        from ctrv.bounded_uncertainty import acceleration_quantiles
                         low_quantile,high_quantile=acceleration_quantiles(forecast_means[i],covs[i],policy.confidence,mu,self.vehicle_config,L)
                         upper_backoff=(high_quantile-value)/scale
                         lower_backoff=(value-low_quantile)/scale
@@ -215,7 +218,7 @@ class VehicleMPC:
                         low_quantile=value-margin*scale;high_quantile=value+margin*scale
                     acceleration_bounds.append([float(low_quantile),float(high_quantile)])
                     quantity_margins[j]=max(quantity_margins[j],upper_backoff,lower_backoff)
-                    if self.prediction_model=='bounded':margins.append(max(0.,upper_backoff,lower_backoff))
+                    if self.acceleration_constraints=='quantile':margins.append(max(0.,upper_backoff,lower_backoff))
                     empty_acceleration_intervals+=int(hi-lo+1e-8 < high_quantile-low_quantile)
                 slack=nx+nu+8*(i-1)+j
                 add(entries+[(slack,-1.)],-np.inf,(hi-value)/scale-upper_backoff)
@@ -268,5 +271,5 @@ class VehicleMPC:
         diagnostic.update(solved=solved,fallback=not solved,horizon=N,warm_start=warm,
                           slack_max=float(slack.max()) if solved else None,
                           slack_mean=float(slack.mean()) if solved else None,
-                          prediction_model=self.prediction_model,acceleration_quantiles=acceleration_bounds,unattainable_acceleration_steps=empty_acceleration_intervals,tightening_max=max(margins),tightening_by_quantity=quantity_margins.tolist(),objective_scale=objective_scale,computation_s=perf_counter()-start)
+                          prediction_model=self.prediction_model,acceleration_constraints=self.acceleration_constraints,acceleration_quantiles=acceleration_bounds,unattainable_acceleration_steps=empty_acceleration_intervals,tightening_max=max(margins),tightening_by_quantity=quantity_margins.tolist(),objective_scale=objective_scale,computation_s=perf_counter()-start)
         return command,diagnostic

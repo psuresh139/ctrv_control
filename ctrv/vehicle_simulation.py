@@ -24,7 +24,7 @@ POLICIES={'mpc':None,'tightening':UncertaintyPolicy(speed_control=False),
 
 def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario='nominal',
                            vehicle_config=VehicleConfig(),noise=VehicleNoise(),limits=DEFAULT_LIMITS,
-                           mu=.9,patch_mu=None,heading_sigma_deg=5.,duration=None,prepared=None,prediction_model="bounded"):
+                           mu=.9,patch_mu=None,heading_sigma_deg=5.,duration=None,prepared=None,prediction_model="bounded",acceleration_constraints=None):
     if policy not in POLICIES or estimator not in ('ekf','ukf'):
         raise ValueError('Unknown vehicle policy or estimator')
     if not np.isfinite(mu) or mu<=0 or (patch_mu is not None and (not np.isfinite(patch_mu) or patch_mu<=0)):
@@ -50,7 +50,7 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
     estimated[0,3]=wrap_to_pi(estimated[0,3])
     covariance[0]=np.zeros((8,8));covariance[0,:5,:5]=P_INIT
     covariance[0,5:,5:]=np.diag([.25,.25,np.deg2rad(2.)**2])
-    controller=VehicleMPC(vehicle_config=vehicle_config,limits=limits,noise=noise,prediction_model=prediction_model)
+    controller=VehicleMPC(vehicle_config=vehicle_config,limits=limits,noise=noise,prediction_model=prediction_model,acceleration_constraints=acceleration_constraints)
     selected=POLICIES[policy];commands=[];applied_commands=[];diagnostics=[];physics=[];caps=[];progresses=[];innovations=[]
     progress=0.;index=0;previous=path['states'][0,[6,7]];completed_at=None
     for k in range(steps):
@@ -155,4 +155,4 @@ def run_vehicle_simulation(seed=42,estimator='ukf',policy='uncertainty',scenario
             'controller_diagnostics':diagnostics,'vehicle_diagnostics':physics,'innovations':innovations,
             'config':{'seed':seed,'estimator':estimator,'policy':policy,'scenario':asdict(scenario),
                       'vehicle':asdict(vehicle_config),'noise':asdict(noise),'limits':asdict(limits),
-                      'prediction_model':prediction_model,'mu':mu,'patch_mu':patch_mu,'heading_sigma_deg':heading_sigma_deg,'duration':duration}}
+                      'prediction_model':prediction_model,'acceleration_constraints':controller.acceleration_constraints,'mu':mu,'patch_mu':patch_mu,'heading_sigma_deg':heading_sigma_deg,'duration':duration}}

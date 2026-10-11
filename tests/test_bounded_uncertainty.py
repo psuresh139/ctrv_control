@@ -66,3 +66,30 @@ def test_acceleration_interval_diagnostic_retains_confidence_and_baseline():
    assert np.isclose(d['tightening_by_quantity'][4],expected)
   results.append(d['unattainable_acceleration_steps'])
  assert results[0]>0 and results[1]<results[0]
+
+
+def test_prediction_and_acceleration_backoffs_are_independent():
+ from ctrv.vehicle_control import VehicleMPC
+ from ctrv.mpc import MPCConfig
+ from ctrv.uncertainty import UncertaintyPolicy
+ x=np.zeros(8);x[2]=8.;X=np.repeat(x[None,:],5,axis=0);X[:,0]=np.arange(5)*.8;U=np.zeros((4,2))
+ P=np.eye(8)*1e-8;P[6,6]=100.
+ counts={}
+ for prediction in ['linearized','bounded']:
+  for constraints in ['gaussian','quantile']:
+   m=VehicleMPC(config=MPCConfig(horizon=4),noise=VehicleNoise(0,0,0,0,0),prediction_model=prediction,acceleration_constraints=constraints)
+   command,d=m.command(x,P,X,U,U[0],policy=UncertaintyPolicy())
+   assert d['prediction_model']==prediction and d['acceleration_constraints']==constraints and np.isfinite(command).all()
+   counts[prediction,constraints]=d['unattainable_acceleration_steps']
+ assert counts['linearized','quantile']<counts['linearized','gaussian']
+ assert counts['bounded','quantile']<counts['bounded','gaussian']
+
+
+def test_quantile_sample_resolution_is_selectable_and_deterministic():
+ import pytest
+ x=np.zeros(8);x[2]=8.;P=np.eye(8)*.001
+ for power in [8,9,11]:
+  q=acceleration_quantiles(x,P,.99,.9,VehicleConfig(),DEFAULT_LIMITS,sample_power=power)
+  assert np.isfinite(q).all() and q[0]<=q[1]
+  assert np.array_equal(q,acceleration_quantiles(x,P,.99,.9,VehicleConfig(),DEFAULT_LIMITS,sample_power=power))
+ with pytest.raises(ValueError):acceleration_quantiles(x,P,.99,.9,VehicleConfig(),DEFAULT_LIMITS,sample_power=2)

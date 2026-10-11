@@ -34,7 +34,7 @@ def command_moments(state, command, dt, mu, config, limits, noise, order=9):
 _NORMAL_POINTS = ndtri(qmc.Sobol(8,scramble=True,seed=2026).random_base2(9))
 
 
-def acceleration_quantiles(mean, covariance, confidence, mu, config, limits):
+def acceleration_quantiles(mean, covariance, confidence, mu, config, limits, sample_power=9):
     """512 fixed quasi-Monte Carlo samples; includes actuator/state support.
 
     Return physical body acceleration quantiles, not actuator demand quantiles.
@@ -42,10 +42,12 @@ def acceleration_quantiles(mean, covariance, confidence, mu, config, limits):
     checked empirically. Negative eigenvalues beyond roundoff are rejected.
     """
     if not .5<confidence<1:raise ValueError('Confidence must be between .5 and 1')
+    if not isinstance(sample_power,int) or not 7<=sample_power<=14:raise ValueError('Sample power must be an integer from 7 to 14')
+    normal_points=_NORMAL_POINTS if sample_power==9 else ndtri(qmc.Sobol(8,scramble=True,seed=2026).random_base2(sample_power))
     values, vectors = np.linalg.eigh((covariance+covariance.T)/2)
     if values.min() < -1e-8 or not np.isfinite(values).all():
         raise ValueError('Finite PSD covariance required for acceleration quantiles')
-    points = mean+_NORMAL_POINTS@((vectors*np.sqrt(np.maximum(values,0.))).T)
+    points = mean+normal_points@((vectors*np.sqrt(np.maximum(values,0.))).T)
     points[:,2] = np.maximum(points[:,2],0.)
     points[:,6] = np.clip(points[:,6],-limits.max_braking,limits.max_accel)
     points[:,7] = np.clip(points[:,7],-limits.max_steering,limits.max_steering)

@@ -32,6 +32,7 @@ _PREPARED={}
 def run_group(job):
     name,estimator,policy,seeds,heading,duration,output,save_traces,digest=job[:9]
     prediction_model=job[9] if len(job)>9 else "bounded"
+    acceleration_constraints=job[10] if len(job)>10 else None
     sensor,mu,patch=CASES[name]
     rows=[]
     for seed in seeds:
@@ -48,7 +49,7 @@ def run_group(job):
                 ref,_,_=prepare_reference();_PREPARED[mu]=(ref,build_vehicle_path(ref,mu))
             vehicle=replace(VehicleConfig(),acceleration_tau_s=.5,steering_tau_s=.3) if name=='actuator_lag' else VehicleConfig()
             result=run_vehicle_simulation(vehicle_config=vehicle,seed=seed,estimator=estimator,policy=policy,scenario=sensor,
-                        mu=mu,patch_mu=patch,heading_sigma_deg=heading,duration=duration,prepared=_PREPARED[mu],prediction_model=prediction_model)
+                        mu=mu,patch_mu=patch,heading_sigma_deg=heading,duration=duration,prepared=_PREPARED[mu],prediction_model=prediction_model,acceleration_constraints=acceleration_constraints)
             for value in result['metrics'].values():
                 if value is not None and not np.isfinite(value):raise ValueError('Nonfinite vehicle metric')
             row.update(status='ok',**result['metrics']);row['config']=result['config']
@@ -98,7 +99,12 @@ def paired_ablations(rows):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--seeds',type=int,default=20);parser.add_argument('--workers',type=int,default=1)
+    parser.add_argument('--seeds',type=int,default=20)
+    seed_selection=parser.add_mutually_exclusive_group()
+    seed_selection.add_argument('--start-seed',type=int,default=0)
+    seed_selection.add_argument('--seed-list',nargs='+',type=int)
+    parser.add_argument('--acceleration-constraints',choices=['gaussian','quantile'])
+    parser.add_argument('--workers',type=int,default=1)
     parser.add_argument('--scenarios',nargs='+',choices=CASES,default=list(CASES))
     parser.add_argument('--estimators',nargs='+',choices=['ekf','ukf'],default=['ekf','ukf'])
     parser.add_argument('--policies',nargs='+',choices=POLICIES,default=list(POLICIES))
@@ -107,7 +113,10 @@ def main(argv=None):
     parser.add_argument('--save-traces',action='store_true');parser.add_argument('--resume',action='store_true')
     parser.add_argument('--output',type=Path,required=True);args=parser.parse_args(argv)
     if args.seeds<1 or args.workers<1:parser.error('Positive seeds and workers required')
-    config={'prediction_model':args.prediction_model,'seeds':list(range(args.seeds)),'scenarios':args.scenarios,'estimators':args.estimators,
+    seeds=args.seed_list if args.seed_list is not None else list(range(args.start_seed,args.start_seed+args.seeds))
+    if min(seeds)<0 or len(set(seeds))!=len(seeds):parser.error('Seeds must be unique and nonnegative')
+    acceleration_constraints=args.acceleration_constraints or ('quantile' if args.prediction_model=='bounded' else 'gaussian')
+    config={'acceleration_constraints':acceleration_constraints,'prediction_model':args.prediction_model,'seeds':seeds,'scenarios':args.scenarios,'estimators':args.estimators,
             'policies':args.policies,'workers':args.workers,'duration':args.duration,'heading_sigma_deg':None if args.no_heading else 5.,
             'save_traces':args.save_traces,'cases':CASES,'vehicle':asdict(VehicleConfig()),
             'noise':asdict(VehicleNoise()),'limits':asdict(DEFAULT_LIMITS),
@@ -122,10 +131,10 @@ def main(argv=None):
         if not args.resume:parser.error('Existing output requires --resume')
         if json.loads(manifest_path.read_text())['fingerprint']!=digest:parser.error('Vehicle resume source/config/dependency/seed fingerprint mismatch')
     manifest={'schema_version':1,'configuration':config,'provenance':env,'fingerprint':digest,
-              'state':'running','expected_runs':args.seeds*len(args.scenarios)*len(args.estimators)*len(args.policies),
+              'state':'running','expected_runs':len(seeds)*len(args.scenarios)*len(args.estimators)*len(args.policies),
               'model_limitations':'Synthetic bicycle, fixed axle loads, actuator lag, combined tire limits; local Gaussian soft constraints; no hardware safety claim.'}
     atomic_json(manifest_path,manifest)
-    jobs=[(s,e,p,config['seeds'],config['heading_sigma_deg'],args.duration,str(args.output),args.save_traces,digest,args.prediction_model)
+    jobs=[(s,e,p,config['seeds'],config['heading_sigma_deg'],args.duration,str(args.output),args.save_traces,digest,args.prediction_model,acceleration_constraints)
           for s in args.scenarios for e in args.estimators for p in args.policies]
     rows=[]
     if args.workers==1:

@@ -74,3 +74,22 @@ def test_trace_export_is_pickle_free_and_resume_requires_trace(tmp_path,monkeypa
         assert data['commands'].shape==(1,) and 'tightening_max' in data.files
     trace.unlink()
     with pytest.raises(ValueError,match='trace missing'):bench.run_group(job)
+
+
+def test_cli_fresh_seed_selection_and_ablation_fingerprints(tmp_path,monkeypatch):
+    monkeypatch.setitem(bench._PREPARED,.9,(None,None))
+    calls=[]
+    def fake(**kw):
+        calls.append(kw)
+        return {'metrics':{'completed':True,'cross_track_rmse_m':1.},'config':{'seed':kw['seed']},'controller_diagnostics':[{'status':'solved'}]}
+    monkeypatch.setattr(bench,'run_vehicle_simulation',fake)
+    common=['--workers','1','--scenarios','nominal','--estimators','ukf','--policies','uncertainty']
+    assert bench.main(common+['--seeds','2','--start-seed','1000','--acceleration-constraints','gaussian','--output',str(tmp_path/'offset')])==0
+    assert [c['seed'] for c in calls]==[1000,1001]
+    assert all(c['acceleration_constraints']=='gaussian' for c in calls)
+    calls.clear()
+    assert bench.main(common+['--seed-list','1000','1002','--output',str(tmp_path/'explicit')])==0
+    assert [c['seed'] for c in calls]==[1000,1002]
+    a=json.loads((tmp_path/'offset/manifest.json').read_text());b=json.loads((tmp_path/'explicit/manifest.json').read_text())
+    assert a['fingerprint']!=b['fingerprint'] and a['configuration']['acceleration_constraints']=='gaussian'
+    with pytest.raises(SystemExit):bench.main(common+['--seed-list','1','1','--output',str(tmp_path/'invalid')])
